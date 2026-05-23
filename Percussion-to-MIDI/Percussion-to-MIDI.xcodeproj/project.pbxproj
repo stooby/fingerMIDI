@@ -1,0 +1,414 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXFileReference section */
+		D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Percussion-to-MIDI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D2972C252FC16FF100FB1743 /* Exceptions for "Percussion-to-MIDI" folder in "Percussion-to-MIDI" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				RNBO/dependencies.json,
+				RNBO/description.json,
+				RNBO/presets.json,
+				RNBO/rnbo/adapters/juce/LICENSE,
+				RNBO/rnbo/adapters/juce/RNBO_JuceAudioProcessor.cpp,
+				RNBO/rnbo/adapters/juce/RNBO_JuceAudioProcessorEditor.cpp,
+				RNBO/rnbo/adapters/juce/RNBO_JuceAudioProcessorUtils.cpp,
+				RNBO/rnbo/adapters/juce/staticplugin/au.cpp,
+				RNBO/rnbo/adapters/juce/staticplugin/AUInfo.plist.in,
+				RNBO/rnbo/adapters/juce/staticplugin/common.cpp,
+				RNBO/rnbo/adapters/juce/staticplugin/PkgInfo,
+				RNBO/rnbo/adapters/juce/staticplugin/unity.cpp,
+				RNBO/rnbo/adapters/juce/staticplugin/UnityInfo.plist.in,
+				RNBO/rnbo/adapters/juce/staticplugin/vst3.cpp,
+				RNBO/rnbo/adapters/juce/staticplugin/VST3Info.plist.in,
+				RNBO/rnbo/adapters/max/external/rnbo_external_wrapper/rnbo_external_wrapper.cpp,
+				RNBO/rnbo/adapters/max/LICENSE,
+				RNBO/rnbo/adapters/max/rnbo_bufferref.cpp,
+				RNBO/rnbo/adapters/max/rnbo_data_loader.cpp,
+				RNBO/rnbo/adapters/max/RNBO_MaxPresetAdapter.cpp,
+				RNBO/rnbo/adapters/wasm/LICENSE,
+				RNBO/rnbo/adapters/wasm/RNBO_WebAssembly.cpp,
+				RNBO/rnbo/cmake/CCache.cmake,
+				RNBO/rnbo/cmake/conan.cmake,
+				RNBO/rnbo/cmake/MinGWSTDThreads.cmake,
+				RNBO/rnbo/cmake/rnbo_description.h.in,
+				RNBO/rnbo/cmake/RNBOConan.cmake,
+				RNBO/rnbo/cmake/RNBODescriptionHeader.cmake,
+				RNBO/rnbo/cmake/RNBOJuce.cmake,
+				RNBO/rnbo/cmake/SCCache.cmake,
+				RNBO/rnbo/common/RNBO_ListU.cpp,
+				RNBO/rnbo/common/RNBO_MinimalEngineU.cpp,
+				RNBO/rnbo/LICENSE,
+				RNBO/rnbo/src/3rdparty/concurrentqueue/LICENSE.md,
+				RNBO/rnbo/src/3rdparty/readerwriterqueue/LICENSE.md,
+				RNBO/rnbo/src/EngineCoreU.cpp,
+				RNBO/rnbo/src/platforms/nostdlib/RNBO_LoggerNoStdLib.cpp,
+				RNBO/rnbo/src/platforms/nostdlib/RNBO_PlatformInterfaceNoStdLib.cpp,
+				RNBO/rnbo/src/RNBO_CoreObject.cpp,
+				RNBO/rnbo/src/RNBO_DataBuffer.cpp,
+				RNBO/rnbo/src/RNBO_DataRefList.cpp,
+				RNBO/rnbo/src/RNBO_DynamicPatcherFactory.cpp,
+				RNBO/rnbo/src/RNBO_Engine.cpp,
+				RNBO/rnbo/src/RNBO_EngineU.cpp,
+				RNBO/rnbo/src/RNBO_ExternalLoader.cpp,
+				RNBO/rnbo/src/RNBO_FileChangeWatcher.cpp,
+				RNBO/rnbo/src/RNBO_LoggerImpl.cpp,
+				RNBO/rnbo/src/RNBO_MaxClang.cpp,
+				RNBO/rnbo/src/RNBO_MidiStreamParserU.cpp,
+				RNBO/rnbo/src/RNBO_ParameterInterfaceAsync.cpp,
+				RNBO/rnbo/src/RNBO_ParameterInterfaceSync.cpp,
+				RNBO/rnbo/src/RNBO_PatcherFactory.cpp,
+				RNBO/rnbo/src/RNBO_PatcherState.cpp,
+				RNBO/rnbo/src/RNBO_PresetList.cpp,
+				RNBO/rnbo/src/RNBO_RemoteParameterClient.cpp,
+				RNBO/rnbo/src/RNBO_UnitTests.cpp,
+				RNBO/rnbo/test/generate.js,
+				RNBO/rnbo/test/main.cpp,
+				RNBO/rnbo/test/package.json,
+				RNBO/rnbo/version.cmake,
+			);
+			target = D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D2972C252FC16FF100FB1743 /* Exceptions for "Percussion-to-MIDI" folder in "Percussion-to-MIDI" target */,
+			);
+			path = "Percussion-to-MIDI";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D2972AF02FC160EC00FB1743 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D2972AEA2FC160EC00FB1743 = {
+			isa = PBXGroup;
+			children = (
+				D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */,
+				D2972AF42FC160EC00FB1743 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D2972AF42FC160EC00FB1743 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D2972AFE2FC160EE00FB1743 /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI" */;
+			buildPhases = (
+				D2972AEF2FC160EC00FB1743 /* Sources */,
+				D2972AF02FC160EC00FB1743 /* Frameworks */,
+				D2972AF12FC160EC00FB1743 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */,
+			);
+			name = "Percussion-to-MIDI";
+			packageProductDependencies = (
+			);
+			productName = "Percussion-to-MIDI";
+			productReference = D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D2972AEB2FC160EC00FB1743 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2640;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					D2972AF22FC160EC00FB1743 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+				};
+			};
+			buildConfigurationList = D2972AEE2FC160EC00FB1743 /* Build configuration list for PBXProject "Percussion-to-MIDI" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = D2972AEA2FC160EC00FB1743;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D2972AF42FC160EC00FB1743 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D2972AF12FC160EC00FB1743 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		D2972AEF2FC160EC00FB1743 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		D2972AFC2FC160EE00FB1743 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		D2972AFD2FC160EE00FB1743 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		D2972AFF2FC160EE00FB1743 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++23";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Percussion-to-MIDI/RNBO/rnbo",
+					"$(SRCROOT)/Percussion-to-MIDI/RNBO",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Percussion-to-MIDI/BridgingHeader.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D2972B002FC160EE00FB1743 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++23";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Percussion-to-MIDI/RNBO/rnbo",
+					"$(SRCROOT)/Percussion-to-MIDI/RNBO",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Percussion-to-MIDI/BridgingHeader.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		D2972AEE2FC160EC00FB1743 /* Build configuration list for PBXProject "Percussion-to-MIDI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D2972AFC2FC160EE00FB1743 /* Debug */,
+				D2972AFD2FC160EE00FB1743 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D2972AFE2FC160EE00FB1743 /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D2972AFF2FC160EE00FB1743 /* Debug */,
+				D2972B002FC160EE00FB1743 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = D2972AEB2FC160EC00FB1743 /* Project object */;
+}

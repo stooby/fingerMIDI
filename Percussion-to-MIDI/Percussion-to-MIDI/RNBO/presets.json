@@ -1,0 +1,192 @@
+[
+  {
+    "name": "untitled",
+    "preset": {
+      "DelayOutput_dB": {
+        "value": -77
+      },
+      "DrumSynthDelaySend_dB": {
+        "value": -77
+      },
+      "DrumSynthOutput_dB": {
+        "value": -77
+      },
+      "DrumSynthVolume_FixedLevel": {
+        "value": 1
+      },
+      "DrumSynthVolume_SensitivityScalePower": {
+        "value": 0.07
+      },
+      "EnableTraining": {
+        "value": 0
+      },
+      "Enable_DrumSynthVolume_Sensitivity": {
+        "value": 1
+      },
+      "InputDelaySend_dB": {
+        "value": -77
+      },
+      "Input_dB": {
+        "value": -11
+      },
+      "Invert_DrumSynthOutput": {
+        "value": 0
+      },
+      "Kick_Pan": {
+        "value": 0.5
+      },
+      "Kick_dB": {
+        "value": 0
+      },
+      "OnsetInput": {
+        "value": -22
+      },
+      "Snare_Pan": {
+        "value": 0.5
+      },
+      "Snare_dB": {
+        "value": 0
+      },
+      "SpecCentCutoff": {
+        "value": 2617.619430955134
+      },
+      "SpecFlatCutoff": {
+        "value": 0.15205651756740882
+      },
+      "SynthMode": {
+        "value": 1
+      },
+      "__sps": {
+        "DjembeSynth": {
+          "drum1": {
+            "value": 1
+          },
+          "drum2": {
+            "value": 0
+          },
+          "drum3": {
+            "value": 0
+          },
+          "freq1": {
+            "value": 80
+          },
+          "freq3": {
+            "value": 240
+          },
+          "freq_2": {
+            "value": 160
+          },
+          "gain1": {
+            "value": 0.9208363937224833
+          },
+          "gain2": {
+            "value": 1
+          },
+          "gain3": {
+            "value": 0.9208363937224833
+          },
+          "pan1": {
+            "value": 0.5
+          },
+          "pan2": {
+            "value": 0.3
+          },
+          "pan3": {
+            "value": 0.7
+          },
+          "position1": {
+            "value": 0.5
+          },
+          "position2": {
+            "value": 0.5
+          },
+          "position3": {
+            "value": 0.5
+          },
+          "strike1": {
+            "value": 0.5
+          },
+          "strike2": {
+            "value": 0.5
+          },
+          "strike3": {
+            "value": 0.5
+          }
+        },
+        "GreyholeDelayFX_Controller": {
+          "GreyholePreset": {
+            "value": 1
+          }
+        },
+        "GreyholeDelayFX_Stereo": {
+          "Damp": {
+            "value": 0
+          },
+          "DelayTime": {
+            "value": 0.1
+          },
+          "Diffusion": {
+            "value": 0.63
+          },
+          "Feedback": {
+            "value": 0.85
+          },
+          "ModDepth": {
+            "value": 0.25
+          },
+          "ModFreq": {
+            "value": 6.5
+          },
+          "Size": {
+            "value": 0.5
+          }
+        },
+        "Onset": {
+          "enable": {
+            "value": 0
+          },
+          "fftsize": {
+            "value": 64
+          },
+          "floor": {
+            "value": 0.1
+          },
+          "medspan": {
+            "value": 11
+          },
+          "mingap": {
+            "value": 20
+          },
+          "needs_init": {
+            "value": 0
+          },
+          "odftype": {
+            "value": 1
+          },
+          "relaxtime": {
+            "value": 0.5
+          },
+          "thresh": {
+            "value": 0.5
+          }
+        },
+        "SpectralCentroid": {
+          "fftsize": {
+            "value": 512
+          },
+          "needs_init": {
+            "value": 0
+          }
+        },
+        "SpectralFlatness": {
+          "fftsize": {
+            "value": 64
+          },
+          "needs_init": {
+            "value": 1
+          }
+        }
+      }
+    }
+  }
+]
