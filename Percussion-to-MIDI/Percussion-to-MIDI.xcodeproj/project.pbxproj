@@ -7,12 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D2144C8C2FC368F5009F434A /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2144C8B2FC368F5009F434A /* AVFoundation.framework */; };
 		D2972C282FC2078800FB1743 /* SwiftMIDICore in Frameworks */ = {isa = PBXBuildFile; productRef = D2972C272FC2078800FB1743 /* SwiftMIDICore */; };
 		D2972C2A2FC2078800FB1743 /* SwiftMIDIInternals in Frameworks */ = {isa = PBXBuildFile; productRef = D2972C292FC2078800FB1743 /* SwiftMIDIInternals */; };
 		D2972C2D2FC207BA00FB1743 /* SwiftMIDIFile in Frameworks */ = {isa = PBXBuildFile; productRef = D2972C2C2FC207BA00FB1743 /* SwiftMIDIFile */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		D2144C8B2FC368F5009F434A /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Percussion-to-MIDI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -102,6 +104,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D2144C8C2FC368F5009F434A /* AVFoundation.framework in Frameworks */,
 				D2972C2A2FC2078800FB1743 /* SwiftMIDIInternals in Frameworks */,
 				D2972C2D2FC207BA00FB1743 /* SwiftMIDIFile in Frameworks */,
 				D2972C282FC2078800FB1743 /* SwiftMIDICore in Frameworks */,
@@ -111,10 +114,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		D2144C8A2FC368F5009F434A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D2144C8B2FC368F5009F434A /* AVFoundation.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		D2972AEA2FC160EC00FB1743 = {
 			isa = PBXGroup;
 			children = (
 				D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */,
+				D2144C8A2FC368F5009F434A /* Frameworks */,
 				D2972AF42FC160EC00FB1743 /* Products */,
 			);
 			sourceTree = "<group>";
