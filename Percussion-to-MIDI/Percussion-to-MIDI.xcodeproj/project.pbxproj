@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		D2972C282FC2078800FB1743 /* SwiftMIDICore in Frameworks */ = {isa = PBXBuildFile; productRef = D2972C272FC2078800FB1743 /* SwiftMIDICore */; };
+		D2972C2A2FC2078800FB1743 /* SwiftMIDIInternals in Frameworks */ = {isa = PBXBuildFile; productRef = D2972C292FC2078800FB1743 /* SwiftMIDIInternals */; };
+		D2972C2D2FC207BA00FB1743 /* SwiftMIDIFile in Frameworks */ = {isa = PBXBuildFile; productRef = D2972C2C2FC207BA00FB1743 /* SwiftMIDIFile */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Percussion-to-MIDI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -95,6 +101,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D2972C2A2FC2078800FB1743 /* SwiftMIDIInternals in Frameworks */,
+				D2972C2D2FC207BA00FB1743 /* SwiftMIDIFile in Frameworks */,
+				D2972C282FC2078800FB1743 /* SwiftMIDICore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -137,6 +146,9 @@
 			);
 			name = "Percussion-to-MIDI";
 			packageProductDependencies = (
+				D2972C272FC2078800FB1743 /* SwiftMIDICore */,
+				D2972C292FC2078800FB1743 /* SwiftMIDIInternals */,
+				D2972C2C2FC207BA00FB1743 /* SwiftMIDIFile */,
 			);
 			productName = "Percussion-to-MIDI";
 			productReference = D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */;
@@ -166,6 +178,10 @@
 			);
 			mainGroup = D2972AEA2FC160EC00FB1743;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D2972C262FC2078800FB1743 /* XCRemoteSwiftPackageReference "swift-midi-core" */,
+				D2972C2B2FC207BA00FB1743 /* XCRemoteSwiftPackageReference "swift-midi-file" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D2972AF42FC160EC00FB1743 /* Products */;
 			projectDirPath = "";
@@ -409,6 +425,43 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D2972C262FC2078800FB1743 /* XCRemoteSwiftPackageReference "swift-midi-core" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/orchetect/swift-midi-core";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.2;
+			};
+		};
+		D2972C2B2FC207BA00FB1743 /* XCRemoteSwiftPackageReference "swift-midi-file" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/orchetect/swift-midi-file";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D2972C272FC2078800FB1743 /* SwiftMIDICore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D2972C262FC2078800FB1743 /* XCRemoteSwiftPackageReference "swift-midi-core" */;
+			productName = SwiftMIDICore;
+		};
+		D2972C292FC2078800FB1743 /* SwiftMIDIInternals */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D2972C262FC2078800FB1743 /* XCRemoteSwiftPackageReference "swift-midi-core" */;
+			productName = SwiftMIDIInternals;
+		};
+		D2972C2C2FC207BA00FB1743 /* SwiftMIDIFile */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D2972C2B2FC207BA00FB1743 /* XCRemoteSwiftPackageReference "swift-midi-file" */;
+			productName = SwiftMIDIFile;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = D2972AEB2FC160EC00FB1743 /* Project object */;
 }
