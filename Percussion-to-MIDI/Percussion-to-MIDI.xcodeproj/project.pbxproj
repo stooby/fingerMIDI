@@ -23,6 +23,7 @@
 				RNBO/dependencies.json,
 				RNBO/description.json,
 				RNBO/presets.json,
+				"RNBO/rnbo_snare-kick-detector.cpp",
 				RNBO/rnbo/adapters/juce/LICENSE,
 				RNBO/rnbo/adapters/juce/RNBO_JuceAudioProcessor.cpp,
 				RNBO/rnbo/adapters/juce/RNBO_JuceAudioProcessorEditor.cpp,
