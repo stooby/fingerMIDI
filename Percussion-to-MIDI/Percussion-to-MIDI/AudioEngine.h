@@ -15,6 +15,9 @@
 - (void)start;
 - (void)stop;
 - (void)setParameterWithIndex:(int)index value:(float)value;
+- (void)loadAudioFileFromURL:(NSURL *)url;
+- (void)rewindToStart;
+- (void)setPlayheadPosition:(int64_t)frame;
 @end
 #endif
 
