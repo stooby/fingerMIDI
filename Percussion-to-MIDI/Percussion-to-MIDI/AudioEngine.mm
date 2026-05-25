@@ -151,6 +151,23 @@ static const AVAudioFrameCount kMaxFrames = 4096;
     _coreObject.setParameterValue(index, value);
 }
 
+- (int)numParameters {
+    return (int)_coreObject.getNumParameters();
+}
+
+- (NSDictionary<NSString *, id> *)parameterInfoAtIndex:(int)index {
+    RNBO::ParameterInfo info;
+    _coreObject.getParameterInfo(index, &info);
+    const char *pid = _coreObject.getParameterId(index);
+    return @{
+        @"id":      [NSString stringWithUTF8String:pid ?: ""],
+        @"min":     @((float)info.min),
+        @"max":     @((float)info.max),
+        @"default": @((float)info.initialValue),
+        @"steps":   @(info.steps)
+    };
+}
+
 - (void)loadAudioFileFromURL:(NSURL *)url {
     NSError *err = nil;
     AVAudioFile *file = [[AVAudioFile alloc] initForReading:url error:&err];
