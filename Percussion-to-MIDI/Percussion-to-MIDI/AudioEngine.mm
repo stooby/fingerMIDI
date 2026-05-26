@@ -11,6 +11,55 @@
 #include "rnbo_snare-kick-detector.cpp"   // generated RNBO patch file
 #include <atomic>
 #include <cstring>
+#include <mutex>
+#include <vector>
+
+// ---------------------------------------------------------------------------
+// MIDI event accumulator
+//
+// Subclasses RNBO::EventHandler to capture outgoing MidiEvents from the RNBO
+// patch. Design notes:
+//
+//  • eventsAvailable() is a no-op — we call drain() explicitly after each
+//    process() call so the architecture doc's "drain after every process block"
+//    contract is honoured for both real-time and offline loops.
+//
+//  • handleMidiEvent() is called from drain(), which runs on whatever thread
+//    calls drain() (the audio render thread during real-time playback, or the
+//    offline-render thread). collectAndClear() is called from the Swift/main
+//    thread. The mutex guards the shared _events vector against this race.
+//    Contention is negligible: MIDI events from a percussion detector are
+//    sparse (one per hit), so the mutex is almost never contested.
+//
+//  • drain() is a thin public wrapper around EventHandler::drainEvents()
+//    (which is protected), used by both the render block and the offline loop.
+// ---------------------------------------------------------------------------
+class MidiEventCapture : public RNBO::EventHandler {
+public:
+    // Called from within process() on the audio thread — intentionally a no-op.
+    // We drain explicitly after process() instead.
+    void eventsAvailable() override {}
+
+    void handleMidiEvent(const RNBO::MidiEvent& event) override {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _events.push_back(event);
+    }
+
+    // Public wrapper for the protected drainEvents(); call after each process().
+    void drain() { drainEvents(); }
+
+    // Returns all accumulated events and clears the buffer.
+    std::vector<RNBO::MidiEvent> collectAndClear() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        std::vector<RNBO::MidiEvent> out;
+        out.swap(_events);
+        return out;
+    }
+
+private:
+    std::mutex _mutex;
+    std::vector<RNBO::MidiEvent> _events;
+};
 
 // Safe upper bound for any macOS hardware buffer size; passed to
 // prepareToProcess() so RNBO pre-allocates its internal working memory.
@@ -34,6 +83,11 @@ static const AVAudioFrameCount kMaxFrames = 4096;
     // Cached hardware sample rate — queried at init so file import can resample
     // correctly even before -start is called.
     double _engineSampleRate;
+
+    // MIDI event capture. _midiCapture must outlive _paramEventInterface
+    // (the interface holds a raw pointer to the handler); see -dealloc.
+    MidiEventCapture                       _midiCapture;
+    RNBO::ParameterEventInterfaceUniquePtr _paramEventInterface;
 }
 
 - (instancetype)init {
@@ -42,8 +96,23 @@ static const AVAudioFrameCount kMaxFrames = 4096;
         AVAudioEngine *tmp = [[AVAudioEngine alloc] init];
         double sr = [tmp.outputNode outputFormatForBus:0].sampleRate;
         _engineSampleRate = sr > 0.0 ? sr : 44100.0;
+
+        // Wire the MIDI event handler to CoreObject. SingleProducer gives us a
+        // lock-free queue between the audio thread (producer) and our drain()
+        // calls (consumer). The returned interface must be kept alive as long as
+        // we want events; it is reset in -dealloc before _midiCapture is destroyed.
+        _paramEventInterface = _coreObject.createParameterInterface(
+            RNBO::ParameterEventInterface::SingleProducer,
+            &_midiCapture
+        );
     }
     return self;
+}
+
+- (void)dealloc {
+    // Reset the interface first — it holds a raw pointer to _midiCapture, so it
+    // must be torn down before the capture object itself is destroyed.
+    _paramEventInterface.reset();
 }
 
 - (void)start {
@@ -62,15 +131,16 @@ static const AVAudioFrameCount kMaxFrames = 4096;
     _coreObject.prepareToProcess(realSR, kMaxFrames);
 
     // Capture raw pointers — no ObjC message sends or ARC retains on the audio thread.
-    RNBO::CoreObject     *core      = &_coreObject;
-    RNBO::SampleValue    *inL       = _inL;
-    RNBO::SampleValue    *inR       = _inR;
-    RNBO::SampleValue    *outL      = _outL;
-    RNBO::SampleValue    *outR      = _outR;
-    std::atomic<float *> *pcmLPtr   = &_pcmL;
-    std::atomic<float *> *pcmRPtr   = &_pcmR;
-    std::atomic<int64_t> *framesPtr = &_pcmFrameCount;
-    std::atomic<int64_t> *headPtr   = &_playhead;
+    RNBO::CoreObject     *core        = &_coreObject;
+    MidiEventCapture     *midiCapture = &_midiCapture;
+    RNBO::SampleValue    *inL         = _inL;
+    RNBO::SampleValue    *inR         = _inR;
+    RNBO::SampleValue    *outL        = _outL;
+    RNBO::SampleValue    *outR        = _outR;
+    std::atomic<float *> *pcmLPtr     = &_pcmL;
+    std::atomic<float *> *pcmRPtr     = &_pcmR;
+    std::atomic<int64_t> *framesPtr   = &_pcmFrameCount;
+    std::atomic<int64_t> *headPtr     = &_playhead;
 
     AVAudioFormat *format = [[AVAudioFormat alloc]
         initStandardFormatWithSampleRate:realSR channels:2];
@@ -116,6 +186,7 @@ static const AVAudioFrameCount kMaxFrames = 4096;
             RNBO::SampleValue *inBufs[2]  = { inL, inR };
             RNBO::SampleValue *outBufs[2] = { outL, outR };
             core->process(inBufs, 2, outBufs, 2, frameCount);
+            midiCapture->drain();
 
             UInt32 chCount = outputData->mNumberBuffers;
             for (UInt32 ch = 0; ch < chCount && ch < 2; ++ch) {
@@ -265,6 +336,19 @@ static const AVAudioFrameCount kMaxFrames = 4096;
     int64_t total = _pcmFrameCount.load(std::memory_order_relaxed);
     int64_t clamped = frame < 0 ? 0 : (frame > total ? total : frame);
     _playhead.store(clamped, std::memory_order_relaxed);
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearMidiEvents {
+    std::vector<RNBO::MidiEvent> events = _midiCapture.collectAndClear();
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:events.size()];
+    for (const RNBO::MidiEvent &ev : events) {
+        NSData *bytes = [NSData dataWithBytes:ev.getData() length:(NSUInteger)ev.getLength()];
+        [result addObject:@{
+            @"timestampMs": @(ev.getTime()),
+            @"bytes":       bytes
+        }];
+    }
+    return [result copy];
 }
 
 @end
