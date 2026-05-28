@@ -115,6 +115,89 @@ static const AVAudioFrameCount kMaxFrames = 4096;
     _paramEventInterface.reset();
 }
 
+// Iterates RNBO's external data refs, loads any file-backed ones from the app
+// bundle, and hands the raw interleaved float samples to the CoreObject via
+// setExternalData(). Must be called after prepareToProcess().
+//
+// RNBO's groove~ (Synth Mode 1) reads from buf1/buf2 at DSP time; if these
+// data refs are never populated the buffers stay empty and no sample audio
+// is produced.
+- (void)loadRNBODataRefs {
+    RNBO::ExternalDataIndex numRefs = _coreObject.getNumExternalDataRefs();
+    for (RNBO::ExternalDataIndex i = 0; i < numRefs; ++i) {
+        const RNBO::ExternalDataInfo info = _coreObject.getExternalDataInfo(i);
+        if (!info.file || info.file[0] == '\0') continue;  // internal ref — no file to load
+
+        RNBO::ExternalDataId memId = _coreObject.getExternalDataId(i);
+        NSString *basename = [[[NSString stringWithUTF8String:info.file] lastPathComponent] copy];
+        NSString *stem = [basename stringByDeletingPathExtension];
+        NSString *ext  = [basename pathExtension];
+
+        // Search bundle subdirectories in order of most-likely location.
+        NSURL *url = [[NSBundle mainBundle] URLForResource:stem withExtension:ext subdirectory:@"RNBO/media"]
+                  ?: [[NSBundle mainBundle] URLForResource:stem withExtension:ext subdirectory:@"media"]
+                  ?: [[NSBundle mainBundle] URLForResource:stem withExtension:ext];
+        if (!url) {
+            NSLog(@"[AudioEngine] RNBO data ref '%s': '%@' not found in bundle — "
+                  @"ensure the file is added to the target's Copy Bundle Resources phase",
+                  memId, basename);
+            continue;
+        }
+
+        NSError *err = nil;
+        AVAudioFile *avFile = [[AVAudioFile alloc] initForReading:url error:&err];
+        if (!avFile) {
+            NSLog(@"[AudioEngine] RNBO data ref '%s': cannot open '%@': %@", memId, basename, err);
+            continue;
+        }
+
+        // processingFormat is always Float32 non-interleaved at the file's native rate.
+        AVAudioChannelCount numCh  = avFile.processingFormat.channelCount;
+        double              fileSR = avFile.processingFormat.sampleRate;
+        AVAudioFrameCount   frames = (AVAudioFrameCount)avFile.length;
+
+        AVAudioPCMBuffer *pcm = [[AVAudioPCMBuffer alloc]
+            initWithPCMFormat:avFile.processingFormat frameCapacity:frames];
+        if (![avFile readIntoBuffer:pcm error:&err]) {
+            NSLog(@"[AudioEngine] RNBO data ref '%s': read error: %@", memId, err);
+            continue;
+        }
+        frames = pcm.frameLength;
+        if (frames == 0) {
+            NSLog(@"[AudioEngine] RNBO data ref '%s': zero frames in '%@'", memId, basename);
+            continue;
+        }
+
+        // RNBO's Float32Buffer (InterleavedAudioBuffer<float>) layout:
+        //   [ch0f0, ch1f0, ch0f1, ch1f1, ...]
+        // For mono this degenerates to a plain sequential array.
+        size_t  totalSamples = (size_t)frames * numCh;
+        float  *interleaved  = new float[totalSamples];
+        float * const *ch    = pcm.floatChannelData;
+        for (AVAudioFrameCount f = 0; f < frames; ++f)
+            for (AVAudioChannelCount c = 0; c < numCh; ++c)
+                interleaved[f * numCh + c] = ch[c][f];
+
+        RNBO::DataType dtype;
+        dtype.type = RNBO::DataType::Float32AudioBuffer;
+        dtype.audioBufferInfo.channels   = numCh;
+        dtype.audioBufferInfo.samplerate = fileSR;
+
+        // The release callback is invoked by RNBO when it no longer needs
+        // the buffer (e.g. when new data is set or the CoreObject is torn down).
+        _coreObject.setExternalData(
+            memId,
+            (char *)interleaved,
+            totalSamples * sizeof(float),
+            dtype,
+            [](RNBO::ExternalDataId, char *data) { delete[] (float *)data; }
+        );
+
+        NSLog(@"[AudioEngine] RNBO buf '%s' loaded: %u frames, %u ch, %.0f Hz from '%@'",
+              memId, (unsigned)frames, (unsigned)numCh, fileSR, basename);
+    }
+}
+
 - (void)start {
     _engine = [[AVAudioEngine alloc] init];
 
@@ -129,6 +212,7 @@ static const AVAudioFrameCount kMaxFrames = 4096;
     _outR = new RNBO::SampleValue[kMaxFrames];
 
     _coreObject.prepareToProcess(realSR, kMaxFrames);
+    [self loadRNBODataRefs];
 
     // Capture raw pointers — no ObjC message sends or ARC retains on the audio thread.
     RNBO::CoreObject     *core        = &_coreObject;
