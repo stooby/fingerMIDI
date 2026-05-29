@@ -65,6 +65,10 @@ private:
 // prepareToProcess() so RNBO pre-allocates its internal working memory.
 static const AVAudioFrameCount kMaxFrames = 4096;
 
+// Block size used for offline rendering. Smaller than the real-time buffer to
+// maximise timestamp resolution for onset detection (≈1.45 ms at 44.1 kHz).
+static const AVAudioFrameCount kOfflineBlockSize = 64;
+
 @implementation AudioEngine {
     RNBO::CoreObject   _coreObject;
     AVAudioEngine     *_engine;
@@ -433,6 +437,111 @@ static const AVAudioFrameCount kMaxFrames = 4096;
         }];
     }
     return [result copy];
+}
+
+// ---------------------------------------------------------------------------
+// Private offline processing loop shared by -renderOfflineAudioToURL:error:
+// and -renderOfflineMIDI. Resets RNBO DSP state, then drives process() over
+// the entire loaded PCM array in kOfflineBlockSize-frame blocks.
+//
+// `audioFile` may be nil (MIDI-only pass); when non-nil, each block's output
+// is written to the file. `pcmBuf` must be pre-allocated with capacity
+// kOfflineBlockSize when `audioFile` is non-nil; ignored when nil.
+//
+// Returns NO and populates *outError if an AVAudioFile write fails.
+// ---------------------------------------------------------------------------
+- (BOOL)_runOfflineLoopWritingTo:(AVAudioFile *)audioFile
+                          pcmBuf:(AVAudioPCMBuffer *)pcmBuf
+                           error:(NSError **)outError {
+    float   *pcmL      = _pcmL.load(std::memory_order_acquire);
+    float   *pcmR      = _pcmR.load(std::memory_order_acquire);
+    int64_t  total     = _pcmFrameCount.load(std::memory_order_acquire);
+
+    _coreObject.prepareToProcess(_engineSampleRate, kOfflineBlockSize, true);
+    _midiCapture.collectAndClear(); // discard any real-time-phase events
+
+    std::vector<RNBO::SampleValue> inL(kOfflineBlockSize, 0.0);
+    std::vector<RNBO::SampleValue> inR(kOfflineBlockSize, 0.0);
+    std::vector<RNBO::SampleValue> outL(kOfflineBlockSize, 0.0);
+    std::vector<RNBO::SampleValue> outR(kOfflineBlockSize, 0.0);
+
+    RNBO::SampleValue *inBufs[2]  = { inL.data(), inR.data() };
+    RNBO::SampleValue *outBufs[2] = { outL.data(), outR.data() };
+
+    int64_t pos = 0;
+    while (pos < total) {
+        AVAudioFrameCount frames =
+            (AVAudioFrameCount)std::min((int64_t)kOfflineBlockSize, total - pos);
+
+        // Copy valid input samples; remainder of the block stays zero-padded.
+        for (AVAudioFrameCount i = 0; i < frames; ++i) {
+            inL[i] = (RNBO::SampleValue)pcmL[pos + i];
+            inR[i] = (RNBO::SampleValue)pcmR[pos + i];
+        }
+        // Zero any leftover tail (last block may be smaller than kOfflineBlockSize).
+        for (AVAudioFrameCount i = frames; i < kOfflineBlockSize; ++i) {
+            inL[i] = 0.0; inR[i] = 0.0;
+        }
+
+        _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
+        _midiCapture.drain();
+
+        if (audioFile) {
+            float * const *ch = pcmBuf.floatChannelData;
+            for (AVAudioFrameCount i = 0; i < frames; ++i) {
+                ch[0][i] = (float)outL[i];
+                ch[1][i] = (float)outR[i];
+            }
+            pcmBuf.frameLength = frames;
+            if (![audioFile writeFromBuffer:pcmBuf error:outError])
+                return NO;
+        }
+
+        pos += frames;
+    }
+    return YES;
+}
+
+- (BOOL)renderOfflineAudioToURL:(NSURL *)url error:(NSError **)outError {
+    float   *pcmL  = _pcmL.load(std::memory_order_acquire);
+    int64_t  total = _pcmFrameCount.load(std::memory_order_acquire);
+    if (!pcmL || total == 0) {
+        if (outError)
+            *outError = [NSError errorWithDomain:@"AudioEngine" code:1
+                userInfo:@{NSLocalizedDescriptionKey: @"No audio file loaded."}];
+        return NO;
+    }
+
+    AVAudioFormat *format = [[AVAudioFormat alloc]
+        initStandardFormatWithSampleRate:_engineSampleRate channels:2];
+    AVAudioFile *outFile = [[AVAudioFile alloc]
+        initForWriting:url settings:format.settings error:outError];
+    if (!outFile) return NO;
+
+    AVAudioPCMBuffer *pcmBuf = [[AVAudioPCMBuffer alloc]
+        initWithPCMFormat:format frameCapacity:kOfflineBlockSize];
+
+    BOOL ok = [self _runOfflineLoopWritingTo:outFile pcmBuf:pcmBuf error:outError];
+
+    NSLog(@"[AudioEngine] offline audio render %@: %.1f s to %@",
+          ok ? @"complete" : @"failed",
+          (double)total / _engineSampleRate,
+          url.lastPathComponent);
+    return ok;
+}
+
+- (void)renderOfflineMIDI {
+    float   *pcmL  = _pcmL.load(std::memory_order_acquire);
+    int64_t  total = _pcmFrameCount.load(std::memory_order_acquire);
+    if (!pcmL || total == 0) {
+        NSLog(@"[AudioEngine] renderOfflineMIDI: no audio loaded");
+        return;
+    }
+
+    [self _runOfflineLoopWritingTo:nil pcmBuf:nil error:nil];
+
+    NSLog(@"[AudioEngine] offline MIDI render complete: %.1f s processed",
+          (double)total / _engineSampleRate);
 }
 
 @end

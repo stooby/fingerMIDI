@@ -27,6 +27,20 @@
 ///   "bytes"       → NSData           — raw MIDI bytes (1–3 bytes per event)
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearMidiEvents
     NS_SWIFT_NAME(collectAndClearMidiEvents());
+
+/// Offline audio export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
+/// device) and writes the processed output to an audio file at `url`. Blocking — call from a
+/// background thread. Engine must be stopped before calling.
+/// Returns YES on success, NO on failure (error written to `outError`).
+- (BOOL)renderOfflineAudioToURL:(NSURL *)url
+                          error:(NSError **)outError
+    NS_SWIFT_NAME(renderOfflineAudio(to:));
+
+/// Offline MIDI export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
+/// device), accumulating all MIDI events emitted by the patch. Blocking — call from a background
+/// thread. Engine must be stopped before calling.
+/// After this returns, retrieve the accumulated events via -collectAndClearMidiEvents.
+- (void)renderOfflineMIDI NS_SWIFT_NAME(renderOfflineMIDI());
 @end
 #endif
 
