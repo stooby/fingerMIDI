@@ -202,6 +202,28 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     }
 }
 
+// Sets Onset subpatcher parameters to working defaults on every engine start.
+// Onset parameters have no UI controls yet; these values establish a reasonable
+// baseline until per-parameter controls are added.
+- (void)applyOnsetDefaults {
+    static const struct { const char *paramId; float value; } defaults[] = {
+        { "Onset/thresh",    0.5f  },
+        { "Onset/relaxtime", 0.5f  },
+        { "Onset/floor",     0.1f  },
+        { "Onset/mingap",    20.0f },
+        { "Onset/medspan",   11.0f },
+        { "Onset/odftype",   1.0f  },
+    };
+    for (const auto &p : defaults) {
+        RNBO::ParameterIndex idx = _coreObject.getParameterIndexForID(p.paramId);
+        if (idx == RNBO::INVALID_INDEX) {
+            NSLog(@"[AudioEngine] applyOnsetDefaults: param '%s' not found in patch", p.paramId);
+            continue;
+        }
+        _coreObject.setParameterValue(idx, p.value);
+    }
+}
+
 - (void)start {
     _engine = [[AVAudioEngine alloc] init];
 
@@ -217,6 +239,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
     _coreObject.prepareToProcess(realSR, kMaxFrames);
     [self loadRNBODataRefs];
+    [self applyOnsetDefaults];
 
     // Capture raw pointers — no ObjC message sends or ARC retains on the audio thread.
     RNBO::CoreObject     *core        = &_coreObject;
@@ -308,6 +331,15 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
 - (void)setParameterWithIndex:(int)index value:(float)value {
     _coreObject.setParameterValue(index, value);
+}
+
+- (void)setParameterWithId:(NSString *)parameterId value:(float)value {
+    RNBO::ParameterIndex idx = _coreObject.getParameterIndexForID(parameterId.UTF8String);
+    if (idx == RNBO::INVALID_INDEX) {
+        NSLog(@"[AudioEngine] setParameterWithId: unknown parameter '%@'", parameterId);
+        return;
+    }
+    _coreObject.setParameterValue(idx, value);
 }
 
 - (int)numParameters {
@@ -467,6 +499,18 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
     RNBO::SampleValue *inBufs[2]  = { inL.data(), inR.data() };
     RNBO::SampleValue *outBufs[2] = { outL.data(), outR.data() };
+
+    // Drain RNBO's startup ParameterBangEvents (scheduled at t=0 during CoreObject
+    // construction) before applying our parameter overrides. Without this pre-warm
+    // block, those events fire first in the initial process() call and re-assert the
+    // patch's assign_defaults values, overwriting applyOnsetDefaults — but only when
+    // no real-time blocks have run beforehand (real-time blocks consume them first).
+    _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
+    _midiCapture.drain();
+    _midiCapture.collectAndClear(); // discard pre-warm events
+
+    // Startup events consumed — our overrides now fire before the next metro tick.
+    [self applyOnsetDefaults];
 
     int64_t pos = 0;
     while (pos < total) {

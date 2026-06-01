@@ -15,6 +15,7 @@
 - (void)start;
 - (void)stop;
 - (void)setParameterWithIndex:(int)index value:(float)value NS_SWIFT_NAME(setParameter(index:value:));
+- (void)setParameterWithId:(NSString *)parameterId value:(float)value NS_SWIFT_NAME(setParameter(id:value:));
 - (int)numParameters;
 - (NSDictionary<NSString *, id> *)parameterInfoAtIndex:(int)index NS_SWIFT_NAME(parameterInfo(at:));
 - (void)loadAudioFileFromURL:(NSURL *)url;
