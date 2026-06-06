@@ -46,31 +46,46 @@ struct RotarySlider: NSViewRepresentable {
 
 @Observable
 final class ParameterStore {
-    enum ControlType { case toggle, rotary, discrete }
+    enum ControlType { case toggle, rotary, discrete, numberInput }
 
     struct Spec {
         let label: String
         let controlType: ControlType
         let order: Int
         var hasRandomize: Bool = false
+        // Overrides the RNBO patch's initialValue in the UI (assign_defaults values
+        // are often not suitable for the target use case). Does not call setParameter
+        // at init — AudioEngine.applyHostDefaults handles the RNBO-side init.
+        var initialOverride: Float? = nil
     }
 
     // Whitelist: only these RNBO parameter IDs get UI controls.
     static let specs: [String: Spec] = [
-        "Onset/enable":          .init(label: "Onset Enable",      controlType: .toggle,  order:  0),
-        "Onset/needs_init":      .init(label: "Onset Needs Init",  controlType: .toggle,  order:  1),
-        "EnableTraining":        .init(label: "Enable Training",   controlType: .toggle,  order:  2),
-        "OnsetInput":            .init(label: "Onset Input",       controlType: .rotary,  order:  3),
-        "SpecFlatCutoff":        .init(label: "Spec Flat Cutoff",  controlType: .rotary,  order:  4),
-        "SpecCentCutoff":        .init(label: "Spec Cent Cutoff",  controlType: .rotary,  order:  5),
-        "Input_dB":              .init(label: "Input dB",          controlType: .rotary,  order:  6),
-        "InputDelaySend_dB":     .init(label: "Input→Delay dB",   controlType: .rotary,  order:  7),
-        "DrumSynthOutput_dB":    .init(label: "Drum Synth Out",    controlType: .rotary,  order:  8),
-        "DrumSynthDelaySend_dB": .init(label: "Drum→Delay dB",    controlType: .rotary,  order:  9),
-        "DelayOutput_dB":        .init(label: "Delay Out",         controlType: .rotary,  order: 10),
-        "SynthMode":             .init(label: "Synth Mode",        controlType: .discrete, order: 11),
+        "Onset/enable":          .init(label: "Onset Enable",      controlType: .toggle,      order:  0),
+        "Onset/needs_init":      .init(label: "Onset Needs Init",  controlType: .toggle,      order:  1),
+        "EnableTraining":        .init(label: "Enable Training",   controlType: .toggle,      order:  2),
+
+        // Onset detection tuning — number inputs, positioned right of the toggle row.
+        // initialOverride matches the host defaults in AudioEngine.applyHostDefaults.
+        // Remove each entry from applyHostDefaults when its UI control is wired up fully.
+        "Onset/thresh":          .init(label: "Thresh",            controlType: .numberInput, order:  3, initialOverride:  0.5),
+        "Onset/relaxtime":       .init(label: "Relax",             controlType: .numberInput, order:  4, initialOverride:  0.5),
+        "Onset/floor":           .init(label: "Floor",             controlType: .numberInput, order:  5, initialOverride:  0.1),
+        "Onset/mingap":          .init(label: "Min Gap",           controlType: .numberInput, order:  6, initialOverride: 20.0),
+        "Onset/medspan":         .init(label: "Med Span",          controlType: .numberInput, order:  7, initialOverride: 11.0),
+        // Onset/odftype: reserved — dropdown (combo box) to be added in a later step.
+
+        "OnsetInput":            .init(label: "Onset Input",       controlType: .rotary,   order:  8),
+        "SpecFlatCutoff":        .init(label: "Spec Flat Cutoff",  controlType: .rotary,   order:  9),
+        "SpecCentCutoff":        .init(label: "Spec Cent Cutoff",  controlType: .rotary,   order: 10),
+        "Input_dB":              .init(label: "Input dB",          controlType: .rotary,   order: 11),
+        "InputDelaySend_dB":     .init(label: "Input→Delay dB",   controlType: .rotary,   order: 12),
+        "DrumSynthOutput_dB":    .init(label: "Drum Synth Out",    controlType: .rotary,   order: 13),
+        "DrumSynthDelaySend_dB": .init(label: "Drum→Delay dB",    controlType: .rotary,   order: 14),
+        "DelayOutput_dB":        .init(label: "Delay Out",         controlType: .rotary,   order: 15),
+        "SynthMode":             .init(label: "Synth Mode",        controlType: .discrete, order: 16),
         "GreyholeDelayFX_Controller/GreyholePreset":
-                                  .init(label: "Greyhole Preset",  controlType: .discrete, order: 12, hasRandomize: true),
+                                  .init(label: "Greyhole Preset",  controlType: .discrete, order: 17, hasRandomize: true),
     ]
 
     struct Param: Identifiable {
@@ -108,14 +123,83 @@ final class ParameterStore {
             ))
         }
         params = collected.sorted { $0.sortOrder < $1.sortOrder }
-        values = params.map { $0.defaultValue }
-        // RNBO initialises all parameters to their defaults at construction time.
-        // We do NOT call setParameter here — only when the user moves a control.
+        // Use initialOverride where specified (host defaults that differ from the RNBO
+        // patch's assign_defaults), otherwise fall back to the RNBO initial value.
+        values = params.map { param in
+            Self.specs[param.rnboId]?.initialOverride ?? param.defaultValue
+        }
+        // RNBO initialises parameters at construction time via ParameterBangEvents.
+        // We do NOT call setParameter here — pushAllValuesToEngine() is called by the
+        // Swift layer at engine start and before each offline render instead.
     }
 
     func set(value: Float, at i: Int) {
         values[i] = value
         engine.setParameter(index: params[i].rnboIndex, value: value)
+    }
+
+    // Queues the current UI state for all parameters into RNBO's parameter interface.
+    // Call after engine.start() and before each offline render so the current UI values
+    // survive RNBO's startup ParameterBangEvents (which fire in the first process block
+    // and would otherwise re-assert the patch's assign_defaults values).
+    func pushAllValuesToEngine() {
+        for (i, param) in params.enumerated() {
+            engine.setParameter(index: param.rnboIndex, value: values[i])
+        }
+    }
+}
+
+// MARK: - NumberInputCell
+
+/// A compact text field + label for numeric RNBO parameter entry.
+/// Commits the value on Return or focus loss; reverts to the last valid value
+/// on invalid input; clamps to param.min…param.max.
+struct NumberInputCell: View {
+    let param: ParameterStore.Param
+    let value: Float
+    let onCommit: (Float) -> Void
+
+    @State private var editText = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 3) {
+            TextField("", text: $editText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 62)
+                .multilineTextAlignment(.center)
+                .focused($isFocused)
+                .onAppear { editText = formatted(value) }
+                .onChange(of: value) { _, new in
+                    if !isFocused { editText = formatted(new) }
+                }
+                .onChange(of: isFocused) { _, focused in
+                    if !focused { commit() }
+                }
+                .onSubmit { commit() }
+            Text(param.label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 62)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    private func formatted(_ v: Float) -> String {
+        let range = param.max - param.min
+        if range > 10 { return String(format: "%.0f", v) }
+        if range > 1  { return String(format: "%.2f", v) }
+        return String(format: "%.3f", v)
+    }
+
+    private func commit() {
+        guard let parsed = Float(editText) else {
+            editText = formatted(value)
+            return
+        }
+        let clamped = max(param.min, min(param.max, parsed))
+        editText = formatted(clamped)
+        onCommit(clamped)
     }
 }
 
@@ -177,7 +261,12 @@ struct ContentView: View {
                 .disabled(!fileLoaded)
 
                 Button {
-                    if isPlaying { engine.stop() } else { engine.start() }
+                    if isPlaying {
+                        engine.stop()
+                    } else {
+                        engine.start()
+                        store.pushAllValuesToEngine()
+                    }
                     isPlaying.toggle()
                 } label: {
                     Label(isPlaying ? "Stop" : "Play",
@@ -220,6 +309,7 @@ struct ContentView: View {
 
     private func exportAudioOffline() {
         let wasPlaying = stopEngineIfNeeded()
+        store.pushAllValuesToEngine()
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "wav")!]
@@ -250,6 +340,7 @@ struct ContentView: View {
         }
 
         let wasPlaying = stopEngineIfNeeded()
+        store.pushAllValuesToEngine()
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "mid")!]
@@ -366,13 +457,29 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Parameters").font(.headline)
 
-                // Toggles — row of bordered buttons
+                // Toggles + Onset number inputs — single row.
+                // Number inputs sit immediately right of the toggle buttons, separated
+                // by a divider. Space at the trailing edge is reserved for the future
+                // Onset/odftype combo box (to be added in a later step).
                 let toggles = indexedParams(ofType: .toggle)
-                if !toggles.isEmpty {
+                let numberInputs = indexedParams(ofType: .numberInput)
+                if !toggles.isEmpty || !numberInputs.isEmpty {
                     HStack(spacing: 10) {
                         ForEach(toggles, id: \.0) { i, param in
                             toggleButton(i: i, param: param)
                         }
+                        if !numberInputs.isEmpty {
+                            Divider().frame(height: 40)
+                            ForEach(numberInputs, id: \.0) { i, param in
+                                NumberInputCell(
+                                    param: param,
+                                    value: store.values[i]
+                                ) { newVal in
+                                    store.set(value: newVal, at: i)
+                                }
+                            }
+                        }
+                        Spacer()
                     }
                 }
 
