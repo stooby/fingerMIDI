@@ -61,7 +61,7 @@ final class ParameterStore {
 
     // Whitelist: only these RNBO parameter IDs get UI controls.
     static let specs: [String: Spec] = [
-        "Onset/enable":          .init(label: "Onset Enable",      controlType: .toggle,      order:  0),
+        "Onset/enable":          .init(label: "Onset Enable",      controlType: .toggle,      order:  0, initialOverride: 1),
         "Onset/needs_init":      .init(label: "Onset Needs Init",  controlType: .toggle,      order:  1),
         "EnableTraining":        .init(label: "Enable Training",   controlType: .toggle,      order:  2),
 
@@ -81,11 +81,11 @@ final class ParameterStore {
         "Input_dB":              .init(label: "Input dB",          controlType: .rotary,   order: 11),
         "InputDelaySend_dB":     .init(label: "Input→Delay dB",   controlType: .rotary,   order: 12),
         "DrumSynthOutput_dB":    .init(label: "Drum Synth Out",    controlType: .rotary,   order: 13),
-        "DrumSynthDelaySend_dB": .init(label: "Drum→Delay dB",    controlType: .rotary,   order: 14),
+        "DrumSynthDelaySend_dB": .init(label: "Drum→Delay dB",    controlType: .rotary,   order: 14, initialOverride: -77.0),
         "DelayOutput_dB":        .init(label: "Delay Out",         controlType: .rotary,   order: 15),
         "SynthMode":             .init(label: "Synth Mode",        controlType: .discrete, order: 16),
         "GreyholeDelayFX_Controller/GreyholePreset":
-                                  .init(label: "Greyhole Preset",  controlType: .discrete, order: 17, hasRandomize: true),
+                .init(label: "Greyhole Preset",  controlType: .discrete, order: 17, hasRandomize: true, initialOverride: 1),
     ]
 
     struct Param: Identifiable {
