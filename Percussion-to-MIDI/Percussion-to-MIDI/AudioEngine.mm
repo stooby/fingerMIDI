@@ -566,4 +566,43 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
           (double)total / _engineSampleRate);
 }
 
+- (NSData *)waveformThumbnailDataWithBinCount:(NSInteger)binCount {
+    float   *pcmL  = _pcmL.load(std::memory_order_acquire);
+    int64_t  total = _pcmFrameCount.load(std::memory_order_acquire);
+    if (!pcmL || total == 0 || binCount <= 0) return nil;
+
+    NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)(binCount * 2 * sizeof(float))];
+    float *out = (float *)data.mutableBytes;
+
+    for (NSInteger i = 0; i < binCount; ++i) {
+        int64_t start = i * total / binCount;
+        int64_t end   = (i + 1) * total / binCount;
+        if (end > total) end = total;
+        if (start >= end) {
+            out[i * 2]     = 0.0f;
+            out[i * 2 + 1] = 0.0f;
+            continue;
+        }
+        float mn = pcmL[start], mx = pcmL[start];
+        for (int64_t f = start + 1; f < end; ++f) {
+            float s = pcmL[f];
+            if (s < mn) mn = s;
+            if (s > mx) mx = s;
+        }
+        out[i * 2]     = mn;
+        out[i * 2 + 1] = mx;
+    }
+    return [data copy];
+}
+
+- (double)playheadFraction {
+    int64_t total = _pcmFrameCount.load(std::memory_order_relaxed);
+    if (total == 0) return 0.0;
+    return (double)_playhead.load(std::memory_order_relaxed) / (double)total;
+}
+
+- (int64_t)totalFrameCount {
+    return _pcmFrameCount.load(std::memory_order_relaxed);
+}
+
 @end

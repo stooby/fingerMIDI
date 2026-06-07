@@ -211,13 +211,43 @@ struct ContentView: View {
     @State private var isExporting = false
     @State private var showFilePicker = false
     @State private var loadedFileName: String?
+    @State private var waveformThumbnail: WaveformThumbnail? = nil
 
     private var engine: AudioEngine { store.engine }
     private var fileLoaded: Bool { loadedFileName != nil }
 
     var body: some View {
         VStack(spacing: 0) {
-            transportPanel.padding()
+            ZStack(alignment: .center) {
+                Text("PercTranscriber")
+                    .font(.title2)
+                if let name = loadedFileName {
+                    HStack {
+                        Text(name)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                            .frame(maxWidth: 200, alignment: .leading)
+                        Spacer()
+                    }
+                }
+            }
+            .padding([.top, .leading, .trailing])
+            .padding(.bottom, 5)
+
+            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+                WaveformView(
+                    thumbnail: waveformThumbnail,
+                    playheadFraction: engine.playheadFraction,
+                    onSeek: { fraction in
+                        engine.setPlayheadPosition(
+                            Int64(fraction * Double(engine.totalFrameCount))
+                        )
+                    }
+                )
+            }
+            .frame(height: 150)
+
+            transportControls.padding()
 
             if !store.params.isEmpty {
                 Divider()
@@ -234,26 +264,43 @@ struct ContentView: View {
             engine.loadAudioFile(from: url)
             if accessed { url.stopAccessingSecurityScopedResource() }
             loadedFileName = url.lastPathComponent
+            let eng = engine
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let data = eng.waveformThumbnailData(binCount: 2048) else { return }
+                let thumb = WaveformThumbnail(data: data)
+                DispatchQueue.main.async { waveformThumbnail = thumb }
+            }
         }
     }
 
     // MARK: Transport
 
-    private var transportPanel: some View {
-        VStack(spacing: 12) {
-            Text("PercTranscriber").font(.title2)
-
-            if let name = loadedFileName {
-                Text(name)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                    .frame(maxWidth: 260)
+    private var transportControls: some View {
+        ZStack {
+            HStack {
+                Button("Import Audio") { showFilePicker = true }
+                    .buttonStyle(.bordered)
+                Spacer()
+                HStack(spacing: 8) {
+                    Button("Export Audio") { exportAudioOffline() }
+                        .buttonStyle(.bordered)
+                    Button("Export MIDI") { exportMIDIOffline() }
+                        .buttonStyle(.bordered)
+                }
+                .disabled(!fileLoaded || isExporting)
+                .overlay {
+                    if isExporting {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Exporting…").font(.caption)
+                        }
+                        .padding(6)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
             }
 
-            Button("Import Audio") { showFilePicker = true }
-                .buttonStyle(.bordered)
-
-            HStack(spacing: 16) {
+            HStack(spacing: 8) {
                 Button { engine.rewindToStart() } label: {
                     Image(systemName: "backward.end.fill")
                 }
@@ -269,31 +316,11 @@ struct ContentView: View {
                     }
                     isPlaying.toggle()
                 } label: {
-                    Label(isPlaying ? "Stop" : "Play",
-                          systemImage: isPlaying ? "stop.fill" : "play.fill")
-                        .frame(width: 100)
+                    Image(systemName: isPlaying ? "stop.fill" : "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(isPlaying ? .red : .accentColor)
                 .disabled(!fileLoaded)
-            }
-
-            HStack(spacing: 12) {
-                Button("Export Audio") { exportAudioOffline() }
-                    .buttonStyle(.bordered)
-                Button("Export MIDI") { exportMIDIOffline() }
-                    .buttonStyle(.bordered)
-            }
-            .disabled(!fileLoaded || isExporting)
-            .overlay {
-                if isExporting {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("Exporting…").font(.caption)
-                    }
-                    .padding(6)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                }
             }
         }
     }

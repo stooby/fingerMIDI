@@ -22,6 +22,20 @@
 - (void)rewindToStart;
 - (void)setPlayheadPosition:(int64_t)frame;
 
+/// Downsamples the left-channel PCM into `binCount` min/max pairs, returned
+/// as a flat NSData of Float32 values: [min₀, max₀, min₁, max₁, ...].
+/// Returns nil if no audio is loaded. O(N) in total PCM frame count.
+/// Call on a background thread immediately after loadAudioFileFromURL:.
+- (nullable NSData *)waveformThumbnailDataWithBinCount:(NSInteger)binCount
+    NS_SWIFT_NAME(waveformThumbnailData(binCount:));
+
+/// Current playhead position as a fraction in [0, 1] of total file length.
+/// Atomic load — safe to read from the main thread at 30 fps.
+@property (readonly) double playheadFraction;
+
+/// Total loaded PCM frame count. Returns 0 if no audio is loaded.
+@property (readonly) int64_t totalFrameCount;
+
 /// Returns all MIDI events accumulated since the last call (or since the last reset) and clears
 /// the buffer. Each element is an NSDictionary with keys:
 ///   "timestampMs" → NSNumber (double) — RNBO engine time in milliseconds
