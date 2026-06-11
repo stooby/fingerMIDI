@@ -327,7 +327,7 @@ struct ContentView: View {
 
     // MARK: Offline Export
 
-    private func stopEngineIfNeeded() -> Bool {
+    private func stopTransportIfNeeded() -> Bool {
         guard isPlaying else { return false }
         engine.stop()
         isPlaying = false
@@ -335,7 +335,10 @@ struct ContentView: View {
     }
 
     private func exportAudioOffline() {
-        let wasPlaying = stopEngineIfNeeded()
+        let wasPlaying = stopTransportIfNeeded()
+        // Stop hardware IO before pushing parameters — ensures no render blocks
+        // consume the queued values before the offline pre-warm block processes them.
+        engine.stopForOfflineRender()
         store.pushAllValuesToEngine()
 
         let panel = NSSavePanel()
@@ -343,6 +346,8 @@ struct ContentView: View {
         panel.nameFieldStringValue = "Export.wav"
         panel.title = "Export Processed Audio"
         guard panel.runModal() == .OK, let url = panel.url else {
+            engine.resumeAfterOfflineRender()
+            store.pushAllValuesToEngine()
             if wasPlaying { engine.start(); isPlaying = true }
             return
         }
@@ -354,7 +359,11 @@ struct ContentView: View {
             } catch {
                 NSLog("[ContentView] audio export error: %@", error.localizedDescription)
             }
-            DispatchQueue.main.async { self.isExporting = false }
+            DispatchQueue.main.async {
+                engine.resumeAfterOfflineRender()
+                self.store.pushAllValuesToEngine()
+                self.isExporting = false
+            }
         }
     }
 
@@ -366,7 +375,10 @@ struct ContentView: View {
             store.set(value: 1, at: i)
         }
 
-        let wasPlaying = stopEngineIfNeeded()
+        let wasPlaying = stopTransportIfNeeded()
+        // Stop hardware IO before pushing parameters — ensures no render blocks
+        // consume the queued values before the offline pre-warm block processes them.
+        engine.stopForOfflineRender()
         store.pushAllValuesToEngine()
 
         let panel = NSSavePanel()
@@ -374,6 +386,8 @@ struct ContentView: View {
         panel.nameFieldStringValue = "Export.mid"
         panel.title = "Export MIDI"
         guard panel.runModal() == .OK, let url = panel.url else {
+            engine.resumeAfterOfflineRender()
+            store.pushAllValuesToEngine()
             if wasPlaying { engine.start(); isPlaying = true }
             return
         }
@@ -389,7 +403,11 @@ struct ContentView: View {
             } catch {
                 NSLog("[ContentView] MIDI export error: %@", error.localizedDescription)
             }
-            DispatchQueue.main.async { self.isExporting = false }
+            DispatchQueue.main.async {
+                engine.resumeAfterOfflineRender()
+                self.store.pushAllValuesToEngine()
+                self.isExporting = false
+            }
         }
     }
 

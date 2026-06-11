@@ -84,8 +84,11 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     std::atomic<int64_t>  _pcmFrameCount;
     std::atomic<int64_t>  _playhead;
 
-    // Cached hardware sample rate — queried at init so file import can resample
-    // correctly even before -start is called.
+    // Gates whether PCM data is fed to RNBO. When false the render block sends
+    // silence to RNBO so effects tails (delay, reverb, etc.) ring out naturally.
+    std::atomic<bool> _isPlaying;
+
+    // Cached hardware sample rate — queried once at init.
     double _engineSampleRate;
 
     // MIDI event capture. _midiCapture must outlive _paramEventInterface
@@ -97,10 +100,6 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 - (instancetype)init {
     self = [super init];
     if (self) {
-        AVAudioEngine *tmp = [[AVAudioEngine alloc] init];
-        double sr = [tmp.outputNode outputFormatForBus:0].sampleRate;
-        _engineSampleRate = sr > 0.0 ? sr : 44100.0;
-
         // Wire the MIDI event handler to CoreObject. SingleProducer gives us a
         // lock-free queue between the audio thread (producer) and our drain()
         // calls (consumer). The returned interface must be kept alive as long as
@@ -109,14 +108,136 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
             RNBO::ParameterEventInterface::SingleProducer,
             &_midiCapture
         );
+        [self setupEngine];
     }
     return self;
 }
 
 - (void)dealloc {
-    // Reset the interface first — it holds a raw pointer to _midiCapture, so it
-    // must be torn down before the capture object itself is destroyed.
+    [_engine stop];
+    // Reset the interface before _midiCapture is destroyed (it holds a raw pointer).
     _paramEventInterface.reset();
+    delete[] _inL;
+    delete[] _inR;
+    delete[] _outL;
+    delete[] _outR;
+}
+
+// Sets up AVAudioEngine, RNBO, and the source node. Called once from -init.
+- (void)setupEngine {
+    _engine = [[AVAudioEngine alloc] init];
+
+    double sr = [_engine.outputNode outputFormatForBus:0].sampleRate;
+    _engineSampleRate = sr > 0.0 ? sr : 44100.0;
+
+    _inL  = new RNBO::SampleValue[kMaxFrames];
+    _inR  = new RNBO::SampleValue[kMaxFrames];
+    _outL = new RNBO::SampleValue[kMaxFrames];
+    _outR = new RNBO::SampleValue[kMaxFrames];
+
+    _coreObject.prepareToProcess(_engineSampleRate, kMaxFrames);
+    [self loadRNBODataRefs];
+    // Parameter values are applied by the Swift layer (ParameterStore.pushAllValuesToEngine)
+    // on the first Play press, so no host-side defaults are pushed here.
+
+    // Capture raw pointers — no ObjC message sends or ARC retains on the audio thread.
+    RNBO::CoreObject     *core           = &_coreObject;
+    MidiEventCapture     *midiCapture    = &_midiCapture;
+    RNBO::SampleValue    *inL            = _inL;
+    RNBO::SampleValue    *inR            = _inR;
+    RNBO::SampleValue    *outL           = _outL;
+    RNBO::SampleValue    *outR           = _outR;
+    std::atomic<float *> *pcmLPtr        = &_pcmL;
+    std::atomic<float *> *pcmRPtr        = &_pcmR;
+    std::atomic<int64_t> *framesPtr      = &_pcmFrameCount;
+    std::atomic<int64_t> *headPtr        = &_playhead;
+    std::atomic<bool>    *isPlayingPtr   = &_isPlaying;
+
+    AVAudioFormat *format = [[AVAudioFormat alloc]
+        initStandardFormatWithSampleRate:_engineSampleRate channels:2];
+
+    _sourceNode = [[AVAudioSourceNode alloc]
+        initWithFormat:format
+        renderBlock:^OSStatus(BOOL *isSilence,
+                              const AudioTimeStamp *timestamp,
+                              AVAudioFrameCount frameCount,
+                              AudioBufferList *outputData) {
+
+            float   *pcmL   = pcmLPtr->load(std::memory_order_acquire);
+            float   *pcmR   = pcmRPtr->load(std::memory_order_acquire);
+            int64_t  total  = framesPtr->load(std::memory_order_relaxed);
+            int64_t  pos    = headPtr->load(std::memory_order_relaxed);
+            bool     playing = isPlayingPtr->load(std::memory_order_relaxed);
+
+            if (playing && pcmL != nullptr && total > 0) {
+                // Guard against pos landing at or past total (e.g. from an
+                // external setPlayheadPosition call right at the file boundary).
+                if (pos >= total) pos = pos % total;
+
+                // Fill RNBO input with seamless loop wrap.
+                // Single-subtract wrap is sufficient because pos < total and
+                // frameCount <= total (true for any file longer than one block).
+                for (AVAudioFrameCount i = 0; i < frameCount; ++i) {
+                    int64_t f = pos + (int64_t)i;
+                    if (f >= total) f -= total;
+                    inL[i] = (RNBO::SampleValue)pcmL[f];
+                    inR[i] = (RNBO::SampleValue)pcmR[f];
+                }
+                int64_t newHead = pos + (int64_t)frameCount;
+                if (newHead >= total) newHead -= total;
+                headPtr->store(newHead, std::memory_order_relaxed);
+            } else {
+                // Stopped or no file loaded — feed silence so effects tails ring out.
+                memset(inL, 0, frameCount * sizeof(RNBO::SampleValue));
+                memset(inR, 0, frameCount * sizeof(RNBO::SampleValue));
+            }
+
+            // RNBO always processes regardless of transport state.
+            RNBO::SampleValue *inBufs[2]  = { inL, inR };
+            RNBO::SampleValue *outBufs[2] = { outL, outR };
+            core->process(inBufs, 2, outBufs, 2, frameCount);
+            midiCapture->drain();
+
+            UInt32 chCount = outputData->mNumberBuffers;
+            for (UInt32 ch = 0; ch < chCount && ch < 2; ++ch) {
+                float             *dst = (float *)outputData->mBuffers[ch].mData;
+                RNBO::SampleValue *src = outBufs[ch];
+                for (AVAudioFrameCount i = 0; i < frameCount; ++i)
+                    dst[i] = (float)src[i];
+            }
+            return noErr;
+        }];
+
+    [_engine attachNode:_sourceNode];
+    [_engine connect:_sourceNode          to:_engine.mainMixerNode format:format];
+    [_engine connect:_engine.mainMixerNode to:_engine.outputNode   format:nil];
+
+    NSError *error = nil;
+    if (![_engine startAndReturnError:&error])
+        NSLog(@"[AudioEngine] failed to start: %@", error);
+}
+
+- (void)start {
+    _isPlaying.store(true, std::memory_order_relaxed);
+}
+
+- (void)stop {
+    _isPlaying.store(false, std::memory_order_relaxed);
+    // Playhead is intentionally NOT reset — transport position is preserved across stop/start.
+}
+
+- (void)stopForOfflineRender {
+    [_engine stop];
+}
+
+- (void)resumeAfterOfflineRender {
+    // Restore real-time block size. No reset=true — preserves current RNBO parameter
+    // state; the Swift layer re-pushes UI values via pushAllValuesToEngine() after this.
+    _coreObject.prepareToProcess(_engineSampleRate, kMaxFrames);
+    [_engine prepare];
+    NSError *error = nil;
+    if (![_engine startAndReturnError:&error])
+        NSLog(@"[AudioEngine] failed to restart after offline render: %@", error);
 }
 
 // Iterates RNBO's external data refs, loads any file-backed ones from the app
@@ -203,111 +324,6 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 }
 
 
-- (void)start {
-    _engine = [[AVAudioEngine alloc] init];
-
-    // Confirm the hardware rate; update if the default output device changed.
-    double realSR = [_engine.outputNode outputFormatForBus:0].sampleRate;
-    if (realSR <= 0.0) realSR = _engineSampleRate;
-    _engineSampleRate = realSR;
-
-    _inL  = new RNBO::SampleValue[kMaxFrames];
-    _inR  = new RNBO::SampleValue[kMaxFrames];
-    _outL = new RNBO::SampleValue[kMaxFrames];
-    _outR = new RNBO::SampleValue[kMaxFrames];
-
-    _coreObject.prepareToProcess(realSR, kMaxFrames);
-    [self loadRNBODataRefs];
-    // Parameter values are applied by the Swift layer (ParameterStore.pushAllValuesToEngine)
-    // immediately after -start returns, so no host-side defaults are pushed here.
-
-    // Capture raw pointers — no ObjC message sends or ARC retains on the audio thread.
-    RNBO::CoreObject     *core        = &_coreObject;
-    MidiEventCapture     *midiCapture = &_midiCapture;
-    RNBO::SampleValue    *inL         = _inL;
-    RNBO::SampleValue    *inR         = _inR;
-    RNBO::SampleValue    *outL        = _outL;
-    RNBO::SampleValue    *outR        = _outR;
-    std::atomic<float *> *pcmLPtr     = &_pcmL;
-    std::atomic<float *> *pcmRPtr     = &_pcmR;
-    std::atomic<int64_t> *framesPtr   = &_pcmFrameCount;
-    std::atomic<int64_t> *headPtr     = &_playhead;
-
-    AVAudioFormat *format = [[AVAudioFormat alloc]
-        initStandardFormatWithSampleRate:realSR channels:2];
-
-    _sourceNode = [[AVAudioSourceNode alloc]
-        initWithFormat:format
-        renderBlock:^OSStatus(BOOL *isSilence,
-                              const AudioTimeStamp *timestamp,
-                              AVAudioFrameCount frameCount,
-                              AudioBufferList *outputData) {
-
-            float   *pcmL  = pcmLPtr->load(std::memory_order_acquire);
-            float   *pcmR  = pcmRPtr->load(std::memory_order_acquire);
-            int64_t  total = framesPtr->load(std::memory_order_relaxed);
-            int64_t  pos   = headPtr->load(std::memory_order_relaxed);
-
-            if (pcmL == nullptr || total == 0) {
-                // No file loaded — zero output and skip RNBO.
-                for (UInt32 ch = 0; ch < outputData->mNumberBuffers; ++ch)
-                    memset(outputData->mBuffers[ch].mData, 0,
-                           outputData->mBuffers[ch].mDataByteSize);
-                *isSilence = YES;
-                return noErr;
-            }
-
-            // Guard against pos landing at or past total (e.g. from an
-            // external setPlayheadPosition call right at the file boundary).
-            if (pos >= total) pos = pos % total;
-
-            // Fill RNBO input with seamless loop wrap.
-            // Single-subtract wrap is sufficient because pos < total and
-            // frameCount <= total (true for any file longer than one block).
-            for (AVAudioFrameCount i = 0; i < frameCount; ++i) {
-                int64_t f = pos + (int64_t)i;
-                if (f >= total) f -= total;
-                inL[i] = (RNBO::SampleValue)pcmL[f];
-                inR[i] = (RNBO::SampleValue)pcmR[f];
-            }
-            int64_t newHead = pos + (int64_t)frameCount;
-            if (newHead >= total) newHead -= total;
-            headPtr->store(newHead, std::memory_order_relaxed);
-
-            RNBO::SampleValue *inBufs[2]  = { inL, inR };
-            RNBO::SampleValue *outBufs[2] = { outL, outR };
-            core->process(inBufs, 2, outBufs, 2, frameCount);
-            midiCapture->drain();
-
-            UInt32 chCount = outputData->mNumberBuffers;
-            for (UInt32 ch = 0; ch < chCount && ch < 2; ++ch) {
-                float             *dst = (float *)outputData->mBuffers[ch].mData;
-                RNBO::SampleValue *src = outBufs[ch];
-                for (AVAudioFrameCount i = 0; i < frameCount; ++i)
-                    dst[i] = (float)src[i];
-            }
-            return noErr;
-        }];
-
-    [_engine attachNode:_sourceNode];
-    [_engine connect:_sourceNode        to:_engine.mainMixerNode format:format];
-    [_engine connect:_engine.mainMixerNode to:_engine.outputNode  format:nil];
-
-    NSError *error = nil;
-    if (![_engine startAndReturnError:&error])
-        NSLog(@"[AudioEngine] failed to start: %@", error);
-}
-
-- (void)stop {
-    [_engine stop];
-    _sourceNode = nil;
-    _engine     = nil;
-    delete[] _inL;  _inL  = nullptr;
-    delete[] _inR;  _inR  = nullptr;
-    delete[] _outL; _outL = nullptr;
-    delete[] _outR; _outR = nullptr;
-    // Playhead is intentionally NOT reset — transport position is preserved across stop/start.
-}
 
 - (void)setParameterWithIndex:(int)index value:(float)value {
     _coreObject.setParameterValue(index, value);

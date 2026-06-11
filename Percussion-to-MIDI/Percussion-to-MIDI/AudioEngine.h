@@ -12,8 +12,25 @@
 #import <Foundation/Foundation.h>
 
 @interface AudioEngine : NSObject
+
+/// Starts audio file playback. The AVAudioEngine and RNBO DSP continue running
+/// regardless — this only gates whether PCM data is fed to RNBO.
 - (void)start;
+
+/// Stops audio file playback. The AVAudioEngine and RNBO DSP keep running so
+/// that effects tails (delay, reverb, etc.) ring out naturally.
 - (void)stop;
+
+/// Stops the AVAudioEngine hardware IO in preparation for an offline render.
+/// Call on the main thread before renderOfflineAudio(to:) or renderOfflineMIDI().
+/// Always pair with a subsequent call to resumeAfterOfflineRender().
+- (void)stopForOfflineRender NS_SWIFT_NAME(stopForOfflineRender());
+
+/// Restores the AVAudioEngine hardware IO and re-prepares RNBO for real-time
+/// processing after an offline render. Call on the main thread, then call
+/// pushAllValuesToEngine() via ParameterStore to restore parameter state.
+- (void)resumeAfterOfflineRender NS_SWIFT_NAME(resumeAfterOfflineRender());
+
 - (void)setParameterWithIndex:(int)index value:(float)value NS_SWIFT_NAME(setParameter(index:value:));
 - (void)setParameterWithId:(NSString *)parameterId value:(float)value NS_SWIFT_NAME(setParameter(id:value:));
 - (int)numParameters;
@@ -45,7 +62,7 @@
 
 /// Offline audio export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
 /// device) and writes the processed output to an audio file at `url`. Blocking — call from a
-/// background thread. Engine must be stopped before calling.
+/// background thread. Call stopForOfflineRender() on the main thread before dispatching.
 /// Returns YES on success, NO on failure (error written to `outError`).
 - (BOOL)renderOfflineAudioToURL:(NSURL *)url
                           error:(NSError **)outError
@@ -53,7 +70,7 @@
 
 /// Offline MIDI export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
 /// device), accumulating all MIDI events emitted by the patch. Blocking — call from a background
-/// thread. Engine must be stopped before calling.
+/// thread. Call stopForOfflineRender() on the main thread before dispatching.
 /// After this returns, retrieve the accumulated events via -collectAndClearMidiEvents.
 - (void)renderOfflineMIDI NS_SWIFT_NAME(renderOfflineMIDI());
 @end
