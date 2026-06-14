@@ -5,6 +5,7 @@
 //  Created by Scott Tooby on 5/22/26.
 //
 
+import Combine
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
@@ -53,9 +54,8 @@ final class ParameterStore {
         let controlType: ControlType
         let order: Int
         var hasRandomize: Bool = false
-        // Overrides the RNBO patch's initialValue in the UI (assign_defaults values
-        // are often not suitable for the target use case). Does not call setParameter
-        // at init — AudioEngine.applyHostDefaults handles the RNBO-side init.
+        // Overrides the RNBO patch's initialValue in the UI for when assign_defaults values
+        // are not suitable
         var initialOverride: Float? = nil
     }
 
@@ -66,8 +66,6 @@ final class ParameterStore {
         "EnableTraining":        .init(label: "Enable Training",   controlType: .toggle,      order:  2),
 
         // Onset detection tuning — number inputs, positioned right of the toggle row.
-        // initialOverride matches the host defaults in AudioEngine.applyHostDefaults.
-        // Remove each entry from applyHostDefaults when its UI control is wired up fully.
         "Onset/thresh":          .init(label: "Thresh",            controlType: .numberInput, order:  3, initialOverride:  0.5),
         "Onset/relaxtime":       .init(label: "Relax",             controlType: .numberInput, order:  4, initialOverride:  0.5),
         "Onset/floor":           .init(label: "Floor",             controlType: .numberInput, order:  5, initialOverride:  0.1),
@@ -209,12 +207,85 @@ struct ContentView: View {
     @State private var store = ParameterStore()
     @State private var isPlaying = false
     @State private var isExporting = false
+    @State private var isMIDIAnalyzing = false
     @State private var showFilePicker = false
     @State private var loadedFileName: String?
     @State private var waveformThumbnail: WaveformThumbnail? = nil
+    @State private var midiNoteOverlay: [MIDINoteEvent] = []
+    // nil = no analysis run yet for the currently loaded file.
+    @State private var lastAnalyzedOnsetParams: [String: Float]? = nil
+    // Snapshot of onset tuning params in effect when midiNoteOverlay was last populated,
+    // whether by offline analysis or real-time capture. Drives stale marking independently
+    // of lastAnalyzedOnsetParams so that real-time notes also grey out on param changes.
+    @State private var lastOverlayOnsetParams: [String: Float]? = nil
+    // Tracks note-on events from real-time playback that are awaiting their matching note-off.
+    @State private var openRealTimeNoteOns: [UInt8: (onsetMs: Double, velocity: UInt8)] = [:]
+    // Accumulated real-time playback duration (ms) since the last reset event (param change,
+    // seek, or file import). When this reaches totalDurationMs, the full file has been
+    // processed in real-time with the current params and "Analyze Onsets" can be disabled.
+    @State private var realTimeCoverageMs: Double = 0
 
     private var engine: AudioEngine { store.engine }
     private var fileLoaded: Bool { loadedFileName != nil }
+
+    // The five onset tuning parameters whose changes make the overlay stale.
+    // Onset/enable and Onset/needs_init are excluded: toggling them doesn't alter
+    // detection sensitivity or timing.
+    private static let onsetTuningParamIds: Set<String> = [
+        "Onset/thresh", "Onset/relaxtime", "Onset/floor", "Onset/mingap", "Onset/medspan"
+    ]
+
+    // Half-width of the time window (in ms) used to match a fresh real-time note
+    // against an existing overlay note of the same pitch during loop overlap-replacement.
+    // Kept tight because RNBO DSP is deterministic — the same onset recurs at nearly
+    // the same timestamp on every loop; the window only needs to absorb float rounding.
+    private static let realtimeNoteReplaceWindowMs: Double = 5.0
+
+    private var totalDurationMs: Double {
+        guard engine.sampleRate > 0 else { return 0 }
+        return Double(engine.totalFrameCount) / engine.sampleRate * 1000.0
+    }
+
+    // True when onset tuning parameters differ from the last analysis snapshot, or no analysis
+    // has been run yet for the current file. Drives the "Analyze Onsets" button enabled state.
+    private var onsetParamsDirty: Bool {
+        guard let last = lastAnalyzedOnsetParams else { return true }
+        return paramsChanged(from: last)
+    }
+
+    // True when onset tuning parameters differ from the params in effect when the overlay
+    // was last populated (by either offline analysis or real-time capture). Drives stale
+    // marking. Separate from onsetParamsDirty so that real-time-only overlay notes also
+    // trigger the false→true transition that .onChange(of:) requires.
+    private var overlayParamsDirty: Bool {
+        guard let last = lastOverlayOnsetParams else { return false }
+        return paramsChanged(from: last)
+    }
+
+    // True when the full file has been processed in real-time with the current onset params,
+    // making an explicit "Analyze Onsets" pass redundant. Resets on param change, seek, or import.
+    private var fullRealTimeCoverageAchieved: Bool {
+        totalDurationMs > 0 && realTimeCoverageMs >= totalDurationMs && !midiNoteOverlay.isEmpty
+    }
+
+    private func paramsChanged(from snapshot: [String: Float]) -> Bool {
+        for (i, param) in store.params.enumerated()
+            where Self.onsetTuningParamIds.contains(param.rnboId)
+        {
+            if abs((snapshot[param.rnboId] ?? Float.nan) - store.values[i]) > 0.0001 { return true }
+        }
+        return false
+    }
+
+    private func currentOnsetParamSnapshot() -> [String: Float] {
+        var snapshot: [String: Float] = [:]
+        for (i, param) in store.params.enumerated()
+            where Self.onsetTuningParamIds.contains(param.rnboId)
+        {
+            snapshot[param.rnboId] = store.values[i]
+        }
+        return snapshot
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -242,7 +313,15 @@ struct ContentView: View {
                         engine.setPlayheadPosition(
                             Int64(fraction * Double(engine.totalFrameCount))
                         )
-                    }
+                        // Re-anchor the real-time timestamp offset to the new position and
+                        // discard open note-ons. Only reset coverage if the full file hasn't
+                        // already been covered — seeking after full coverage is just navigation.
+                        engine.beginRealTimeCapture()
+                        openRealTimeNoteOns.removeAll()
+                        if !fullRealTimeCoverageAchieved { realTimeCoverageMs = 0 }
+                    },
+                    midiNotes: midiNoteOverlay,
+                    totalDurationMs: totalDurationMs
                 )
             }
             .frame(height: 150)
@@ -253,6 +332,20 @@ struct ContentView: View {
                 Divider()
                 parametersPanel
             }
+        }
+        .onReceive(Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()) { _ in
+            guard isPlaying else { return }
+            realTimeCoverageMs += 1000.0 / 15.0
+            pollRealTimeMidiEvents()
+        }
+        .onChange(of: overlayParamsDirty) { _, isDirty in
+            if isDirty && !midiNoteOverlay.isEmpty {
+                midiNoteOverlay = midiNoteOverlay.map {
+                    MIDINoteEvent(note: $0.note, velocity: $0.velocity,
+                                  onsetMs: $0.onsetMs, durationMs: $0.durationMs, isStale: true)
+                }
+            }
+            if isDirty { realTimeCoverageMs = 0 }
         }
         .fileImporter(
             isPresented: $showFilePicker,
@@ -270,6 +363,12 @@ struct ContentView: View {
                 let thumb = WaveformThumbnail(data: data)
                 DispatchQueue.main.async { waveformThumbnail = thumb }
             }
+            // Reset overlay, all snapshots, and coverage so the button enables and stale notes don't linger.
+            midiNoteOverlay = []
+            lastAnalyzedOnsetParams = nil
+            lastOverlayOnsetParams = nil
+            openRealTimeNoteOns.removeAll()
+            realTimeCoverageMs = 0
         }
     }
 
@@ -286,13 +385,16 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                     Button("Export MIDI") { exportMIDIOffline() }
                         .buttonStyle(.bordered)
+                    Button("Analyze Onsets") { analyzeMIDI() }
+                        .buttonStyle(.bordered)
+                        .disabled(!fileLoaded || isPlaying || isExporting || isMIDIAnalyzing || !onsetParamsDirty || fullRealTimeCoverageAchieved)
                 }
-                .disabled(!fileLoaded || isExporting)
+                .disabled(!fileLoaded || isExporting || isMIDIAnalyzing)
                 .overlay {
-                    if isExporting {
+                    if isExporting || isMIDIAnalyzing {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text("Exporting…").font(.caption)
+                            Text(isExporting ? "Exporting…" : "Analyzing…").font(.caption)
                         }
                         .padding(6)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
@@ -310,7 +412,9 @@ struct ContentView: View {
                 Button {
                     if isPlaying {
                         engine.stop()
+                        flushOpenRealTimeNotes()
                     } else {
+                        engine.beginRealTimeCapture()
                         engine.start()
                         store.pushAllValuesToEngine()
                     }
@@ -325,11 +429,145 @@ struct ContentView: View {
         }
     }
 
+    // MARK: Real-Time MIDI Overlay
+
+    // Inserts a fresh real-time note into midiNoteOverlay, removing any existing note of
+    // the same pitch within the replacement window (handles re-detection on loop iterations).
+    private func mergeRealTimeNote(_ note: MIDINoteEvent) {
+        let window = Self.realtimeNoteReplaceWindowMs
+        midiNoteOverlay.removeAll { existing in
+            existing.note == note.note && abs(existing.onsetMs - note.onsetMs) <= window
+        }
+        midiNoteOverlay.append(note)
+    }
+
+    // Drains newly accumulated real-time MIDI events and merges completed notes into the overlay.
+    private func pollRealTimeMidiEvents() {
+        let rawEvents = engine.collectAndClearRealTimeMidiEvents() ?? []
+        var addedAnyNote = false
+        for dict in rawEvents {
+            guard
+                let ms     = dict["timestampMs"] as? Double,
+                let bytes  = dict["bytes"] as? Data,
+                bytes.count >= 3
+            else { continue }
+            let statusNibble = bytes[0] >> 4
+            let note     = bytes[1]
+            let velocity = bytes[2]
+            if statusNibble == 0x9 && velocity > 0 {
+                openRealTimeNoteOns[note] = (onsetMs: ms, velocity: velocity)
+            } else if statusNibble == 0x8 || (statusNibble == 0x9 && velocity == 0) {
+                if let entry = openRealTimeNoteOns[note] {
+                    mergeRealTimeNote(MIDINoteEvent(
+                        note: note, velocity: entry.velocity,
+                        onsetMs: entry.onsetMs, durationMs: ms - entry.onsetMs,
+                        isStale: false
+                    ))
+                    openRealTimeNoteOns.removeValue(forKey: note)
+                    addedAnyNote = true
+                }
+            }
+        }
+        // Update the overlay snapshot so overlayParamsDirty can transition false→true
+        // if the user later changes onset params — enabling stale marking for real-time notes.
+        if addedAnyNote {
+            lastOverlayOnsetParams = currentOnsetParamSnapshot()
+        }
+    }
+
+    // Closes all pending real-time note-ons with a fallback duration and merges them
+    // into the overlay. Called when the transport stops to avoid losing the last note(s).
+    private func flushOpenRealTimeNotes() {
+        var flushedAny = false
+        for (note, entry) in openRealTimeNoteOns {
+            mergeRealTimeNote(MIDINoteEvent(
+                note: note, velocity: entry.velocity,
+                onsetMs: entry.onsetMs, durationMs: 50,
+                isStale: false
+            ))
+            flushedAny = true
+        }
+        openRealTimeNoteOns.removeAll()
+        if flushedAny {
+            lastOverlayOnsetParams = currentOnsetParamSnapshot()
+        }
+    }
+
     // MARK: Offline Export
+
+    // Pairs raw RNBO MIDI event dicts into MIDINoteEvent on/off matches.
+    private func pairMIDIEvents(_ rawEvents: [[String: Any]]) -> [MIDINoteEvent] {
+        let sorted = rawEvents.sorted {
+            (($0["timestampMs"] as? Double) ?? 0) < (($1["timestampMs"] as? Double) ?? 0)
+        }
+        var open: [UInt8: (onsetMs: Double, velocity: UInt8)] = [:]
+        var result: [MIDINoteEvent] = []
+        for dict in sorted {
+            guard
+                let ms = dict["timestampMs"] as? Double,
+                let bytes = dict["bytes"] as? Data,
+                bytes.count >= 3
+            else { continue }
+            let statusNibble = bytes[0] >> 4
+            let note = bytes[1]
+            let velocity = bytes[2]
+            if statusNibble == 0x9 && velocity > 0 {
+                open[note] = (onsetMs: ms, velocity: velocity)
+            } else if statusNibble == 0x8 || (statusNibble == 0x9 && velocity == 0) {
+                if let entry = open[note] {
+                    result.append(MIDINoteEvent(
+                        note: note, velocity: entry.velocity,
+                        onsetMs: entry.onsetMs, durationMs: ms - entry.onsetMs
+                    ))
+                    open.removeValue(forKey: note)
+                }
+            }
+        }
+        // Flush any unclosed note-ons with a fallback duration.
+        for (note, entry) in open {
+            result.append(MIDINoteEvent(
+                note: note, velocity: entry.velocity,
+                onsetMs: entry.onsetMs, durationMs: 50
+            ))
+        }
+        return result.sorted { $0.onsetMs < $1.onsetMs }
+    }
+
+    private func analyzeMIDI() {
+        guard !isPlaying, engine.totalFrameCount > 0, !isMIDIAnalyzing else { return }
+        if let i = store.params.firstIndex(where: { $0.rnboId == "Onset/enable" }),
+           store.values[i] < 0.5 {
+            store.set(value: 1, at: i)
+        }
+        let snapshot = currentOnsetParamSnapshot()
+        isMIDIAnalyzing = true
+        // Render block calls _coreObject.process() continuously even when transport is
+        // stopped (feeding silence). stopForOfflineRender halts it so the offline loop
+        // has exclusive CoreObject access, and so queued parameter values survive intact
+        // for the offline pre-warm block (pushAllValuesToEngine must follow, not precede).
+        engine.stopForOfflineRender()
+        store.pushAllValuesToEngine()
+        DispatchQueue.global(qos: .userInitiated).async { [engine] in
+            engine.renderOfflineMIDI()
+            let rawEvents = engine.collectAndClearMidiEvents() ?? []
+            let notes = self.pairMIDIEvents(rawEvents)
+            DispatchQueue.main.async {
+                // resumeAfterOfflineRender calls prepareToProcess(reset=true), resetting
+                // RNBO parameters; re-push UI values immediately to restore DSP state.
+                engine.resumeAfterOfflineRender()
+                self.store.pushAllValuesToEngine()
+                self.midiNoteOverlay = notes
+                self.lastAnalyzedOnsetParams = snapshot
+                self.lastOverlayOnsetParams = snapshot
+                self.isMIDIAnalyzing = false
+            }
+        }
+    }
 
     private func stopTransportIfNeeded() -> Bool {
         guard isPlaying else { return false }
         engine.stop()
+        flushOpenRealTimeNotes()
         isPlaying = false
         return true
     }
@@ -392,10 +630,15 @@ struct ContentView: View {
             return
         }
 
+        // Snapshot onset tuning params used for this render so the overlay
+        // and staleness check reflect exactly what was rendered.
+        let snapshot = currentOnsetParamSnapshot()
+
         isExporting = true
         DispatchQueue.global(qos: .userInitiated).async { [engine] in
             engine.renderOfflineMIDI()
             let rawEvents = engine.collectAndClearMidiEvents() ?? []
+            let notes = self.pairMIDIEvents(rawEvents)
 
             do {
                 let data = try buildMIDIFile(from: rawEvents)
@@ -406,6 +649,9 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 engine.resumeAfterOfflineRender()
                 self.store.pushAllValuesToEngine()
+                self.midiNoteOverlay = notes
+                self.lastAnalyzedOnsetParams = snapshot
+                self.lastOverlayOnsetParams = snapshot
                 self.isExporting = false
             }
         }

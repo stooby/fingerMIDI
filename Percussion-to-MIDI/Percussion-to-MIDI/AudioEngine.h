@@ -53,12 +53,29 @@
 /// Total loaded PCM frame count. Returns 0 if no audio is loaded.
 @property (readonly) int64_t totalFrameCount;
 
+/// Hardware sample rate in Hz. Used by the Swift layer to convert frame counts to milliseconds.
+@property (readonly) double sampleRate;
+
 /// Returns all MIDI events accumulated since the last call (or since the last reset) and clears
 /// the buffer. Each element is an NSDictionary with keys:
 ///   "timestampMs" → NSNumber (double) — RNBO engine time in milliseconds
 ///   "bytes"       → NSData           — raw MIDI bytes (1–3 bytes per event)
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearMidiEvents
     NS_SWIFT_NAME(collectAndClearMidiEvents());
+
+/// Call on the main thread immediately before start() (and after setPlayheadPosition()
+/// when seeking during playback) to initialise the timestamp anchor used by
+/// collectAndClearRealTimeMidiEvents(). Records the current playhead frame and sets
+/// a flag for the render block to capture the matching RNBO engine time on the next
+/// process() call.
+- (void)beginRealTimeCapture NS_SWIFT_NAME(beginRealTimeCapture());
+
+/// Returns all MIDI events accumulated during real-time playback since the last call,
+/// with timestamps converted to file-relative milliseconds via the anchor set by
+/// beginRealTimeCapture(). Same dictionary format as collectAndClearMidiEvents().
+/// Safe to call from the main thread.
+- (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearRealTimeMidiEvents
+    NS_SWIFT_NAME(collectAndClearRealTimeMidiEvents());
 
 /// Offline audio export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
 /// device) and writes the processed output to an audio file at `url`. Blocking — call from a

@@ -1,0 +1,42 @@
+{
+  "originHash" : "45bce34855e43bf39132b5da1cd29ecc5ae204a65581819798ec6e46e1ebdb7f",
+  "pins" : [
+    {
+      "identity" : "swift-data-parsing",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/orchetect/swift-data-parsing",
+      "state" : {
+        "revision" : "b5c4d0455151c30069bb435e86a7cafa937c6e47",
+        "version" : "0.1.2"
+      }
+    },
+    {
+      "identity" : "swift-midi-core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/orchetect/swift-midi-core",
+      "state" : {
+        "revision" : "8ca67a4aa5dc59169b4f0abb654d4ac8340a94bf",
+        "version" : "1.0.2"
+      }
+    },
+    {
+      "identity" : "swift-midi-file",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/orchetect/swift-midi-file",
+      "state" : {
+        "revision" : "b50c08837d21f9b6533730806d9a5822616615a5",
+        "version" : "1.0.1"
+      }
+    },
+    {
+      "identity" : "swift-timecode",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/orchetect/swift-timecode",
+      "state" : {
+        "revision" : "88591f790378125627e5467a552dbbc831cca752",
+        "version" : "3.1.2"
+      }
+    }
+  ],
+  "version" : 3
+}

@@ -5,6 +5,16 @@
 
 import SwiftUI
 
+// MARK: - MIDINoteEvent
+
+struct MIDINoteEvent {
+    let note: UInt8        // 36 = C1 kick, 38 = D1 snare
+    let velocity: UInt8
+    let onsetMs: Double
+    let durationMs: Double
+    var isStale: Bool = false
+}
+
 // MARK: - WaveformThumbnail
 
 struct WaveformThumbnail {
@@ -31,6 +41,8 @@ struct WaveformView: View {
     let thumbnail: WaveformThumbnail?
     let playheadFraction: Double
     let onSeek: ((Double) -> Void)?
+    var midiNotes: [MIDINoteEvent] = []
+    var totalDurationMs: Double = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -53,6 +65,27 @@ struct WaveformView: View {
                     context.stroke(path,
                                    with: .color(Color(red: 0.2, green: 0.5, blue: 1.0)),
                                    lineWidth: 1)
+                }
+
+                // MIDI note overlay — drawn after waveform, before playhead
+                if !midiNotes.isEmpty && totalDurationMs > 0 {
+                    let stripHeight: CGFloat = 12
+                    // D1 (snare, higher pitch) sits above C1 (kick, lower pitch)
+                    let yForNote: (UInt8) -> CGFloat = { note in
+                        note == 38 ? size.height * 0.68 : size.height * 0.84
+                    }
+                    for noteEvent in midiNotes {
+                        let x = size.width * (noteEvent.onsetMs / totalDurationMs)
+                        let w = max(2, size.width * (noteEvent.durationMs / totalDurationMs))
+                        let y = yForNote(noteEvent.note) - stripHeight / 2
+                        let rect = CGRect(x: x, y: y, width: w, height: stripHeight)
+                        let color: Color = noteEvent.isStale
+                            ? Color.gray.opacity(0.35)
+                            : (noteEvent.note == 38
+                                ? Color(red: 0.2, green: 0.85, blue: 0.9).opacity(0.75)   // D1 snare: cyan
+                                : Color(red: 1.0, green: 0.45, blue: 0.1).opacity(0.75))  // C1 kick:  orange
+                        context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color))
+                    }
                 }
 
                 // Placeholder text when no file is loaded

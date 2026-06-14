@@ -95,6 +95,22 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // (the interface holds a raw pointer to the handler); see -dealloc.
     MidiEventCapture                       _midiCapture;
     RNBO::ParameterEventInterfaceUniquePtr _paramEventInterface;
+
+    // Absolute RNBO engine time (ms) at the start of the most recent offline
+    // render main loop. RNBO's time counter is cumulative and is not reset by
+    // prepareToProcess, so event timestamps must be normalised by subtracting
+    // this offset to produce file-relative times.
+    RNBO::MillisecondTime _offlineRenderStartMs;
+
+    // Real-time playback timestamp anchor. Set by -beginRealTimeCapture (main thread)
+    // and consumed by the render block (audio thread) on the next process() call.
+    // _rtAnchorPlayheadFrame is written by the main thread before _needsRtAnchor is set,
+    // so the audio thread sees a consistent value once it observes _needsRtAnchor == true.
+    // _rtAnchorRnboTime is written by the audio thread and read by the main thread;
+    // stored as uint64_t bit-pattern to allow std::atomic usage with a double.
+    std::atomic<bool>     _needsRtAnchor;
+    std::atomic<int64_t>  _rtAnchorPlayheadFrame;
+    std::atomic<uint64_t> _rtAnchorRnboTimeBits; // IEEE 754 double stored as uint64_t
 }
 
 - (instancetype)init {
@@ -151,7 +167,9 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     std::atomic<float *> *pcmRPtr        = &_pcmR;
     std::atomic<int64_t> *framesPtr      = &_pcmFrameCount;
     std::atomic<int64_t> *headPtr        = &_playhead;
-    std::atomic<bool>    *isPlayingPtr   = &_isPlaying;
+    std::atomic<bool>    *isPlayingPtr        = &_isPlaying;
+    std::atomic<bool>    *needsRtAnchorPtr   = &_needsRtAnchor;
+    std::atomic<uint64_t>*rtAnchorBitsPtr    = &_rtAnchorRnboTimeBits;
 
     AVAudioFormat *format = [[AVAudioFormat alloc]
         initStandardFormatWithSampleRate:_engineSampleRate channels:2];
@@ -168,6 +186,16 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
             int64_t  total  = framesPtr->load(std::memory_order_relaxed);
             int64_t  pos    = headPtr->load(std::memory_order_relaxed);
             bool     playing = isPlayingPtr->load(std::memory_order_relaxed);
+
+            // Capture real-time anchor: record RNBO engine time at the playhead frame
+            // stored by beginRealTimeCapture(). Must happen before process() advances time.
+            if (needsRtAnchorPtr->load(std::memory_order_acquire) && playing) {
+                RNBO::MillisecondTime t = core->getCurrentTime();
+                uint64_t bits;
+                memcpy(&bits, &t, sizeof(bits));
+                rtAnchorBitsPtr->store(bits, std::memory_order_release);
+                needsRtAnchorPtr->store(false, std::memory_order_release);
+            }
 
             if (playing && pcmL != nullptr && total > 0) {
                 // Guard against pos landing at or past total (e.g. from an
@@ -454,13 +482,53 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     _playhead.store(clamped, std::memory_order_relaxed);
 }
 
+- (void)beginRealTimeCapture {
+    // Snapshot the playhead frame first so the audio thread sees a stable anchor
+    // value once it observes _needsRtAnchor == true.
+    _rtAnchorPlayheadFrame.store(_playhead.load(std::memory_order_relaxed),
+                                 std::memory_order_relaxed);
+    _needsRtAnchor.store(true, std::memory_order_release);
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearRealTimeMidiEvents {
+    // Read the anchor values. _rtAnchorRnboTimeBits is written by the audio thread
+    // (after _needsRtAnchor clears) and read here on the main thread.
+    uint64_t bits = _rtAnchorRnboTimeBits.load(std::memory_order_acquire);
+    RNBO::MillisecondTime anchorRnboMs;
+    memcpy(&anchorRnboMs, &bits, sizeof(anchorRnboMs));
+    double anchorFileMs = (double)_rtAnchorPlayheadFrame.load(std::memory_order_relaxed)
+                          / _engineSampleRate * 1000.0;
+    // Total file duration in ms — used to wrap timestamps back into [0, totalMs) after
+    // loop iterations. RNBO time advances monotonically regardless of transport looping,
+    // so without fmod every post-wrap event maps past the right edge of the waveform.
+    double totalMs = (double)_pcmFrameCount.load(std::memory_order_relaxed)
+                     / _engineSampleRate * 1000.0;
+
+    std::vector<RNBO::MidiEvent> events = _midiCapture.collectAndClear();
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:events.size()];
+    for (const RNBO::MidiEvent &ev : events) {
+        NSData *bytes = [NSData dataWithBytes:ev.getData() length:(NSUInteger)ev.getLength()];
+        double ms = anchorFileMs + (ev.getTime() - anchorRnboMs);
+        if (totalMs > 0) ms = fmod(ms, totalMs);
+        [result addObject:@{
+            @"timestampMs": @(ms),
+            @"bytes":       bytes
+        }];
+    }
+    return [result copy];
+}
+
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearMidiEvents {
     std::vector<RNBO::MidiEvent> events = _midiCapture.collectAndClear();
     NSMutableArray *result = [NSMutableArray arrayWithCapacity:events.size()];
     for (const RNBO::MidiEvent &ev : events) {
         NSData *bytes = [NSData dataWithBytes:ev.getData() length:(NSUInteger)ev.getLength()];
+        // Normalise to file-relative time: RNBO's time counter is cumulative and
+        // not reset by prepareToProcess, so subtract the offset captured at the
+        // start of the most recent offline render main loop.
+        double ms = ev.getTime() - _offlineRenderStartMs;
         [result addObject:@{
-            @"timestampMs": @(ev.getTime()),
+            @"timestampMs": @(ms),
             @"bytes":       bytes
         }];
     }
@@ -505,6 +573,11 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
     _midiCapture.drain();
     _midiCapture.collectAndClear(); // discard pre-warm events
+
+    // Record absolute RNBO engine time at the start of the main render loop.
+    // RNBO's time counter is cumulative (not reset by prepareToProcess), so
+    // collectAndClearMidiEvents subtracts this offset to produce file-relative ms.
+    _offlineRenderStartMs = _coreObject.getCurrentTime();
 
     int64_t pos = 0;
     while (pos < total) {
@@ -619,6 +692,10 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
 - (int64_t)totalFrameCount {
     return _pcmFrameCount.load(std::memory_order_relaxed);
+}
+
+- (double)sampleRate {
+    return _engineSampleRate;
 }
 
 @end
