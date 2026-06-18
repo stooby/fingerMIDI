@@ -90,6 +90,14 @@
 /// thread. Call stopForOfflineRender() on the main thread before dispatching.
 /// After this returns, retrieve the accumulated events via -collectAndClearMidiEvents.
 - (void)renderOfflineMIDI NS_SWIFT_NAME(renderOfflineMIDI());
+
+/// Callback invoked on the main thread whenever the RNBO patch internally writes a
+/// new value to a watched parameter (currently SpecFlatCutoff and SpecCentCutoff,
+/// which the patch sets after EnableTraining runs). Self-writes from
+/// -setParameterWithIndex:value: / -setParameterWithId:value: are filtered out at
+/// the source-id level and never reach this block. `index` is the RNBO parameter
+/// index; `value` is the new value.
+@property (nonatomic, copy, nullable) void (^parameterChangeHandler)(int index, float value);
 @end
 #endif
 

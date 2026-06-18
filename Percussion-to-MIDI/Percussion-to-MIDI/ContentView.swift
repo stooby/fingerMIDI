@@ -129,11 +129,30 @@ final class ParameterStore {
         // RNBO initialises parameters at construction time via ParameterBangEvents.
         // We do NOT call setParameter here — pushAllValuesToEngine() is called by the
         // Swift layer at engine start and before each offline render instead.
+
+        // Listen for parameter writes the RNBO patch makes internally (e.g.
+        // SpecFlatCutoff / SpecCentCutoff after EnableTraining runs). The
+        // ObjC++ layer filters out self-writes via source-id and only invokes
+        // this block for genuine patch-driven changes, on the main thread.
+        engine.parameterChangeHandler = { [weak self] index, value in
+            guard let self else { return }
+            guard let i = self.params.firstIndex(where: { $0.rnboIndex == Int32(index) })
+            else { return }
+            self.updateValueFromEngine(at: i, value: value)
+        }
     }
 
     func set(value: Float, at i: Int) {
         values[i] = value
         engine.setParameter(index: params[i].rnboIndex, value: value)
+    }
+
+    // Mirrors a patch-internal parameter write into the UI state. Does NOT call
+    // engine.setParameter — the value is already live in RNBO; pushing it back
+    // would just bounce the same event through the source filter again.
+    func updateValueFromEngine(at i: Int, value: Float) {
+        guard i >= 0, i < values.count else { return }
+        values[i] = value
     }
 
     // Queues the current UI state for all parameters into RNBO's parameter interface.

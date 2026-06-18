@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <set>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -61,6 +62,86 @@ private:
     std::vector<RNBO::MidiEvent> _events;
 };
 
+// ---------------------------------------------------------------------------
+// Parameter event listener
+//
+// Subclasses RNBO::EventHandler to capture parameter value changes from the
+// RNBO patch. Used to mirror patch-internal parameter writes (e.g. the
+// SpecFlatCutoff and SpecCentCutoff values computed when the EnableTraining
+// feature runs) back into the SwiftUI parameter store so the UI display
+// updates and subsequent pushAllValuesToEngine() calls don't clobber them.
+//
+// Design notes:
+//
+//  • Registered on a second ParameterEventInterface (separate from the MIDI
+//    one) per RNBO's "one handler per interface" API. Both interfaces receive
+//    the same outgoing events; this class ignores everything except the
+//    indices it has been told to watch.
+//
+//  • eventsAvailable() is a no-op; drain() is called explicitly from the
+//    audio render block after every process(), matching the MidiEventCapture
+//    pattern. handleParameterEvent() therefore runs on the audio thread.
+//
+//  • Feedback-loop avoidance: every host-initiated write is routed through
+//    AudioEngine's _paramEventInterface (NOT _coreObject directly), so those
+//    events come back tagged with that interface's pointer as their source.
+//    The hostInterfaceId filter drops them so a user-driven rotary change to
+//    SpecFlatCutoff / SpecCentCutoff doesn't ping-pong an extra UI update.
+//
+//  • Watched-index filtering keeps the dispatch_async fast path off the hook
+//    for unrelated parameter events. Both the watched set and the host
+//    interface id are written once at AudioEngine init (before the audio
+//    engine starts), then read-only from the audio thread — no locking needed.
+//
+//  • The Objective-C callback block is invoked via dispatch_async on the main
+//    queue, so the SwiftUI ParameterStore handler runs on the main thread.
+//
+//  • paramEventsDeliveryEnabled is toggled false around offline renders to
+//    suppress reset-bang events (from prepareToProcess(reset=true)) and any
+//    in-flight events from leaking into the UI after the render completes.
+// ---------------------------------------------------------------------------
+class ParameterEventCapture : public RNBO::EventHandler {
+public:
+    using ParamChangeBlock = void (^)(RNBO::ParameterIndex index, RNBO::ParameterValue value);
+
+    void eventsAvailable() override {}
+
+    void handleParameterEvent(const RNBO::ParameterEvent& event) override {
+        if (!_deliveryEnabled.load(std::memory_order_acquire)) return;
+        if (event.getSource() == _hostInterfaceId) return;
+        if (_watchedParamIndices.find(event.getIndex()) == _watchedParamIndices.end()) return;
+
+        ParamChangeBlock block = _paramChangeBlock;
+        if (!block) return;
+
+        RNBO::ParameterIndex index = event.getIndex();
+        RNBO::ParameterValue value = event.getValue();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            block(index, value);
+        });
+    }
+
+    void drain() { drainEvents(); }
+
+    // Configuration — call once at init, before the audio engine starts.
+    void setHostInterfaceId(RNBO::ParameterInterfaceId id) { _hostInterfaceId = id; }
+    void setWatchedParamIndices(std::set<RNBO::ParameterIndex> indices) {
+        _watchedParamIndices = std::move(indices);
+    }
+    void setParamChangeBlock(ParamChangeBlock block) { _paramChangeBlock = block; }
+
+    // Toggled around offline renders (main thread).
+    void setDeliveryEnabled(bool enabled) {
+        _deliveryEnabled.store(enabled, std::memory_order_release);
+    }
+
+private:
+    RNBO::ParameterInterfaceId     _hostInterfaceId = nullptr;
+    std::set<RNBO::ParameterIndex> _watchedParamIndices;
+    ParamChangeBlock               _paramChangeBlock = nil;
+    std::atomic<bool>              _deliveryEnabled{true};
+};
+
 // Safe upper bound for any macOS hardware buffer size; passed to
 // prepareToProcess() so RNBO pre-allocates its internal working memory.
 static const AVAudioFrameCount kMaxFrames = 4096;
@@ -96,6 +177,14 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     MidiEventCapture                       _midiCapture;
     RNBO::ParameterEventInterfaceUniquePtr _paramEventInterface;
 
+    // Parameter event listener. Receives notifications when the RNBO patch
+    // internally writes to watched parameters (currently SpecFlatCutoff and
+    // SpecCentCutoff after EnableTraining runs) and forwards them to the
+    // Swift layer via -parameterChangeHandler. _paramCapture must outlive
+    // _paramListenerInterface (the interface holds a raw pointer); see -dealloc.
+    ParameterEventCapture                  _paramCapture;
+    RNBO::ParameterEventInterfaceUniquePtr _paramListenerInterface;
+
     // Absolute RNBO engine time (ms) at the start of the most recent offline
     // render main loop. RNBO's time counter is cumulative and is not reset by
     // prepareToProcess, so event timestamps must be normalised by subtracting
@@ -120,10 +209,41 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
         // lock-free queue between the audio thread (producer) and our drain()
         // calls (consumer). The returned interface must be kept alive as long as
         // we want events; it is reset in -dealloc before _midiCapture is destroyed.
+        //
+        // _paramEventInterface also serves as the host-write interface: all
+        // -setParameterWithIndex:value: / -setParameterWithId:value: calls route
+        // through it (rather than _coreObject) so the resulting parameter events
+        // come back tagged with this interface's pointer as their source. That
+        // identity is what _paramCapture filters on to drop self-writes.
         _paramEventInterface = _coreObject.createParameterInterface(
             RNBO::ParameterEventInterface::SingleProducer,
             &_midiCapture
         );
+
+        // Wire the parameter-change listener to CoreObject. Separate interface,
+        // separate handler, drained alongside the MIDI one in the render block.
+        _paramListenerInterface = _coreObject.createParameterInterface(
+            RNBO::ParameterEventInterface::SingleProducer,
+            &_paramCapture
+        );
+
+        // Tell _paramCapture which interface's events to treat as self-writes
+        // (everything we send via _paramEventInterface->setParameterValue), and
+        // which parameter indices it should care about. SpecFlatCutoff and
+        // SpecCentCutoff are set internally by the patch after EnableTraining
+        // runs; if either is missing from the patch we just skip it.
+        _paramCapture.setHostInterfaceId(
+            (RNBO::ParameterInterfaceId)_paramEventInterface.get()
+        );
+        std::set<RNBO::ParameterIndex> watched;
+        for (NSString *paramId in @[@"SpecFlatCutoff", @"SpecCentCutoff"]) {
+            RNBO::ParameterIndex idx =
+                _coreObject.getParameterIndexForID(paramId.UTF8String);
+            if (idx != RNBO::INVALID_INDEX) watched.insert(idx);
+            else NSLog(@"[AudioEngine] watched param '%@' not found in patch", paramId);
+        }
+        _paramCapture.setWatchedParamIndices(std::move(watched));
+
         [self setupEngine];
     }
     return self;
@@ -131,12 +251,28 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
 - (void)dealloc {
     [_engine stop];
-    // Reset the interface before _midiCapture is destroyed (it holds a raw pointer).
+    // Reset interfaces before their handlers are destroyed (interfaces hold raw pointers).
+    _paramListenerInterface.reset();
     _paramEventInterface.reset();
     delete[] _inL;
     delete[] _inR;
     delete[] _outL;
     delete[] _outR;
+}
+
+- (void)setParameterChangeHandler:(void (^)(int, float))handler {
+    _parameterChangeHandler = [handler copy];
+    // Adapt the host-friendly (int, float) signature to the C++ types
+    // ParameterEventCapture expects internally.
+    void (^block)(int, float) = _parameterChangeHandler;
+    if (block) {
+        _paramCapture.setParamChangeBlock(^(RNBO::ParameterIndex index,
+                                            RNBO::ParameterValue value) {
+            block((int)index, (float)value);
+        });
+    } else {
+        _paramCapture.setParamChangeBlock(nil);
+    }
 }
 
 // Sets up AVAudioEngine, RNBO, and the source node. Called once from -init.
@@ -159,6 +295,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // Capture raw pointers — no ObjC message sends or ARC retains on the audio thread.
     RNBO::CoreObject     *core           = &_coreObject;
     MidiEventCapture     *midiCapture    = &_midiCapture;
+    ParameterEventCapture *paramCapture  = &_paramCapture;
     RNBO::SampleValue    *inL            = _inL;
     RNBO::SampleValue    *inR            = _inR;
     RNBO::SampleValue    *outL           = _outL;
@@ -225,6 +362,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
             RNBO::SampleValue *outBufs[2] = { outL, outR };
             core->process(inBufs, 2, outBufs, 2, frameCount);
             midiCapture->drain();
+            paramCapture->drain();
 
             UInt32 chCount = outputData->mNumberBuffers;
             for (UInt32 ch = 0; ch < chCount && ch < 2; ++ch) {
@@ -255,6 +393,15 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 }
 
 - (void)stopForOfflineRender {
+    // Suppress parameter-change delivery to Swift for the duration of the offline
+    // render. prepareToProcess(reset=true) inside the offline loop fires bang
+    // events for the patch's assign_defaults values, and pushAllValuesToEngine
+    // (called by the Swift layer immediately after) fires another round through
+    // _paramEventInterface. Both are dispatch_async'd to the main queue from
+    // within the audio/offline thread; without this flag they would land on
+    // the main thread AFTER resumeAfterOfflineRender returns and overwrite the
+    // training-computed values in ParameterStore.values.
+    _paramCapture.setDeliveryEnabled(false);
     [_engine stop];
 }
 
@@ -266,6 +413,12 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     NSError *error = nil;
     if (![_engine startAndReturnError:&error])
         NSLog(@"[AudioEngine] failed to restart after offline render: %@", error);
+    // Re-enable parameter-change delivery. The Swift layer calls
+    // pushAllValuesToEngine() immediately after this — those events come back
+    // with source == _paramEventInterface and are filtered out by source id,
+    // so the training-computed values that ParameterStore already holds are
+    // not displaced.
+    _paramCapture.setDeliveryEnabled(true);
 }
 
 // Iterates RNBO's external data refs, loads any file-backed ones from the app
@@ -354,7 +507,11 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
 
 - (void)setParameterWithIndex:(int)index value:(float)value {
-    _coreObject.setParameterValue(index, value);
+    // Route through _paramEventInterface (not _coreObject directly) so the
+    // resulting parameter event is tagged with this interface's pointer as its
+    // source. ParameterEventCapture filters those out to break the feedback
+    // loop for user-driven rotary changes to watched parameters.
+    _paramEventInterface->setParameterValue(index, value);
 }
 
 - (void)setParameterWithId:(NSString *)parameterId value:(float)value {
@@ -363,7 +520,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
         NSLog(@"[AudioEngine] setParameterWithId: unknown parameter '%@'", parameterId);
         return;
     }
-    _coreObject.setParameterValue(idx, value);
+    _paramEventInterface->setParameterValue(idx, value);
 }
 
 - (int)numParameters {
@@ -572,6 +729,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // runs with assign_defaults values whenever no prior real-time blocks have run.
     _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
     _midiCapture.drain();
+    _paramCapture.drain();
     _midiCapture.collectAndClear(); // discard pre-warm events
 
     // Record absolute RNBO engine time at the start of the main render loop.
@@ -596,6 +754,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
         _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
         _midiCapture.drain();
+        _paramCapture.drain();
 
         if (audioFile) {
             float * const *ch = pcmBuf.floatChannelData;

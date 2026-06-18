@@ -1252,7 +1252,7 @@ For most use cases the 2048-bin approach is indistinguishable, making this a low
 
 ## Architectural Notes
 
-### Parameter Control System (Step 8)
+### Parameter Control and Listener System (Step 8)
 
 #### ObjC++ Bridge Layer (`AudioEngine.h` / `AudioEngine.mm`)
 
@@ -1325,11 +1325,13 @@ User moves control
     → store.set(value:at:)          [main thread]
         → values[i] = value         [updates display]
         → engine.setParameter(index:value:)
-            → AudioEngine.mm: _coreObject.setParameterValue(index, value)
+            → AudioEngine.mm: _paramEventInterface->setParameterValue(index, value)
                 → RNBO CoreObject applies value on next process() call
 ```
 
-Parameter changes are fire-and-forget from the Swift side. There is no polling or callback that syncs RNBO parameter values back into `values[]`. The `values` array is the sole source of truth for all UI display; it is always written before calling into RNBO.
+Host writes route through `_paramEventInterface` rather than calling `_coreObject.setParameterValue(...)` directly. The interface's pointer is recorded as the event's source, which is what the listener path (below) filters on to distinguish host writes from patch-internal writes and avoid feedback loops.
+
+UI-driven parameter changes are fire-and-forget on this path. The reverse direction — patch-internal writes flowing back into `values[]` — is handled by the listener path described under **RNBO Patch → Swift UI Listener Path** below. The `values` array remains the sole source of truth for UI display; both write directions update it before SwiftUI redraws.
 
 #### Initialization Sequence
 
@@ -1340,7 +1342,11 @@ Parameter changes are fire-and-forget from the Swift side. There is no polling o
        ↓
 3. ParameterStore.init
    a. AudioEngine() created
-      └─ AudioEngine.init calls -setupEngine, which creates the permanent AVAudioEngine,
+      └─ AudioEngine.init creates _paramEventInterface (handler = _midiCapture) and
+         _paramListenerInterface (handler = _paramCapture); records
+         _paramEventInterface.get() on _paramCapture as the host-write source id;
+         resolves SpecFlatCutoff and SpecCentCutoff indices and seeds _paramCapture's
+         watched set. Then calls -setupEngine, which creates the permanent AVAudioEngine,
          queries the hardware sample rate, allocates scratch buffers, calls
          prepareToProcess(sr, kMaxFrames) and loadRNBODataRefs, then creates and connects
          AVAudioSourceNode and calls [_engine startAndReturnError:]. The audio render thread
@@ -1355,6 +1361,9 @@ Parameter changes are fire-and-forget from the Swift side. There is no polling o
    e. values[] initialised — entries with `initialOverride` use that value; all others
       use `param.defaultValue` (RNBO's `assign_defaults` initialValue). NO
       setParameterValue calls are made here.
+   f. engine.parameterChangeHandler assigned a [weak self] closure that maps an
+      incoming (index, value) callback to ParameterStore.updateValueFromEngine(at:value:).
+      This is the RNBO → UI listener path; see the dedicated section below.
        ↓
 4. SwiftUI renders ContentView body; parameter controls display their initial values
        ↓
@@ -1374,6 +1383,145 @@ The key constraint: `getNumParameters()` and `getParameterInfo()` are called bef
 | Play button, after `engine.start()` | Every time playback starts | Apply current UI state (including `initialOverride` values) before first real-time block |
 | `exportAudioOffline()` / `exportMIDIOffline()`, after `engine.stopForOfflineRender()` | Before offline render dispatch | Queue current UI values while no render blocks are running; must follow `stopForOfflineRender()` |
 | `exportAudioOffline()` / `exportMIDIOffline()` cancel and completion paths, after `engine.resumeAfterOfflineRender()` | After offline render or cancellation | Re-push UI values after RNBO was reset by offline `prepareToProcess(reset=true)` |
+
+#### RNBO Patch → Swift UI Listener Path
+
+The RNBO patch writes to certain parameters internally. Currently this applies to `SpecFlatCutoff` and `SpecCentCutoff`, which the patch sets after the **Enable Training** feature finishes processing a window of audio: the patch clusters per-onset spectral centroid and flatness features into kick vs. snare groups and computes the cutoff "border" values between the clusters.
+
+Without a listener, those patch-internal writes are invisible to the UI:
+- The rotaries continue to display the pre-training values.
+- The next `pushAllValuesToEngine()` call (Play press, or before an offline render) overwrites the patch-computed values with the stale UI state.
+
+The listener path captures these writes at the C++ layer and mirrors them into `ParameterStore.values[]` on the main thread. The rotaries then redraw via `@Observable` and subsequent `pushAllValuesToEngine()` calls preserve the trained values.
+
+##### Two-interface architecture
+
+Two `ParameterEventInterface` instances are registered on the `CoreObject`, each with its own `RNBO::EventHandler` subclass:
+
+| Interface | Handler | Purpose |
+|---|---|---|
+| `_paramEventInterface` | `_midiCapture` (`MidiEventCapture`) | MIDI event drain (Step 10); also the **host-write interface** used by `setParameterWithIndex:value:` and `setParameterWithId:value:` |
+| `_paramListenerInterface` *(new)* | `_paramCapture` (`ParameterEventCapture`) | Receives parameter-change notifications for the watched set |
+
+Both interfaces receive the same outgoing events from the engine. Each handler inherits no-op defaults for event types it does not care about, so `MidiEventCapture` silently ignores `handleParameterEvent` notifications and `ParameterEventCapture` silently ignores `handleMidiEvent` notifications. Separating them this way keeps each class focused on a single event type rather than mixing two unrelated concerns into one handler.
+
+`ParameterEventCapture` is a file-scope class in `AudioEngine.mm`, declared immediately after `MidiEventCapture`. It mirrors the `MidiEventCapture` design: `eventsAvailable` is an intentional no-op, `drain()` is a thin public wrapper around `EventHandler::drainEvents()`, and `drain()` is called explicitly from the audio render block — once for `_midiCapture`, then once for `_paramCapture` — immediately after `core->process()`. The same drain pair runs after each `process()` in the offline loop pre-warm and main blocks.
+
+##### handleParameterEvent filter chain
+
+`handleParameterEvent` runs on the audio thread (same context as `handleMidiEvent`). Three filters are applied in order before any work is dispatched:
+
+1. **Delivery flag** — `std::atomic<bool> _deliveryEnabled`. Toggled false around offline renders (see *Offline-render isolation* below). When false, every event is dropped before the source and watched-index filters even run.
+2. **Source filter** — drops events whose `getSource()` equals `_hostInterfaceId`. This is the feedback-loop guard described below.
+3. **Watched-indices filter** — drops events whose `getIndex()` is not in `_watchedParamIndices`. Currently the set is `{ SpecFlatCutoff, SpecCentCutoff }`; either is silently skipped at init if the patch does not expose it.
+
+Events that survive all three filters are forwarded to Swift by `dispatch_async`'ing the registered Objective-C block onto the main queue. The block invocation captures `index` and `value` by value, so the audio thread holds no reference across the async boundary.
+
+##### Source-ID identity (feedback-loop avoidance)
+
+RNBO's `ParameterInterfaceId` is just the implementation pointer of the originating interface (`const void *`). Every `ParameterEvent` carries the source via `getSource()`.
+
+For the listener to distinguish host-driven writes (which it must drop) from patch-internal writes (which it must forward), all host writes are now routed through `_paramEventInterface->setParameterValue(...)` rather than `_coreObject.setParameterValue(...)` directly. The interface's pointer is recorded once at init on `_paramCapture` as `_hostInterfaceId`:
+
+```objc
+_paramCapture.setHostInterfaceId(
+    (RNBO::ParameterInterfaceId)_paramEventInterface.get()
+);
+```
+
+Every host write then comes back through `handleParameterEvent` with `event.getSource() == _hostInterfaceId` and is dropped at the source filter. Patch-internal writes carry a different source (the patcher's internal origin) and pass through.
+
+Concretely, this means a user-driven turn of the `SpecFlatCutoff` rotary:
+1. updates `values[i]` immediately (UI redraws),
+2. queues a `setParameterValue` on `_paramEventInterface`,
+3. drains as a `ParameterEvent` whose source equals `_hostInterfaceId`,
+4. is dropped at the source filter — **no redundant listener-driven update**.
+
+##### Offline-render isolation
+
+`prepareToProcess(reset=true)` inside the offline loop fires `ParameterBangEvents` for the patch's `assign_defaults` values, and the Swift layer's `pushAllValuesToEngine()` call (immediately after `stopForOfflineRender`) fires another round through `_paramEventInterface`. Both run on the offline / audio thread; their resulting `dispatch_async` blocks would otherwise land on the main queue **after** `resumeAfterOfflineRender` returns and overwrite training-computed values that `ParameterStore.values` was already correctly holding.
+
+The fix is bracketing the offline window with the delivery flag:
+
+| Step | Effect on `_paramCapture._deliveryEnabled` |
+|---|---|
+| `stopForOfflineRender` | set to `false` |
+| Offline render runs; `_paramCapture.drain()` still called each block to empty the queue | every event dropped at filter 1 |
+| `resumeAfterOfflineRender` | set back to `true` |
+| `pushAllValuesToEngine()` runs (host writes through `_paramEventInterface`) | events delivered, but dropped at the source filter (filter 2) |
+
+The drain calls themselves are not skipped — the queue must still be emptied to avoid backlogs — only the dispatch-to-main step is suppressed.
+
+##### Swift side — callback registration
+
+`AudioEngine` exposes:
+
+```objc
+@property (nonatomic, copy, nullable) void (^parameterChangeHandler)(int index, float value);
+```
+
+The custom setter copies the block and forwards it to `_paramCapture.setParamChangeBlock(...)`, adapting the Swift-facing `(int, float)` signature to the C++ `(RNBO::ParameterIndex, RNBO::ParameterValue)` types `ParameterEventCapture` stores internally.
+
+`ParameterStore.init` registers the handler at the end of construction:
+
+```swift
+engine.parameterChangeHandler = { [weak self] index, value in
+    guard let self else { return }
+    guard let i = self.params.firstIndex(where: { $0.rnboIndex == Int32(index) })
+    else { return }
+    self.updateValueFromEngine(at: i, value: value)
+}
+```
+
+`updateValueFromEngine(at:value:)` writes `values[i]` directly. It does **not** call `engine.setParameter` — the value is already live in RNBO, and pushing it back would either no-op (filtered by source) or, if constraint clamping shifted it, send a redundant event:
+
+```swift
+func updateValueFromEngine(at i: Int, value: Float) {
+    guard i >= 0, i < values.count else { return }
+    values[i] = value
+}
+```
+
+The `[weak self]` capture prevents a retain cycle: `AudioEngine` (owned by `ParameterStore`) would otherwise strongly retain a closure that strongly retains `ParameterStore`.
+
+##### End-to-end flow summary
+
+**User-driven write (e.g. user turns the `SpecFlatCutoff` rotary):**
+```
+[main]   store.set(value:at:) → values[i] = value (UI redraws)
+                              → engine.setParameter(...)
+                                  → _paramEventInterface->setParameterValue(...)
+                                  → event queued, source = _paramEventInterface.get()
+[audio]  core->process() → midiCapture->drain() → paramCapture->drain()
+                                  → handleParameterEvent fires
+                                  → source == _hostInterfaceId → DROPPED ✓
+```
+
+**Patch-internal write (e.g. EnableTraining computes `SpecFlatCutoff`):**
+```
+[audio]  core->process() runs training; patch writes SpecFlatCutoff
+                                  → event queued, source = patcher-internal
+         paramCapture->drain() → handleParameterEvent fires
+                                  → delivery enabled, source ≠ _hostInterfaceId,
+                                    index in watched set
+                                  → dispatch_async to main queue
+[main]   block invocation
+                                  → store.updateValueFromEngine(at: i, value:)
+                                  → values[i] = value
+                                  → @Observable triggers SwiftUI rotary redraw ✓
+```
+
+##### Adding more watched parameters
+
+To watch additional parameters in the future, extend the seed list in `AudioEngine -init`:
+
+```objc
+for (NSString *paramId in @[@"SpecFlatCutoff", @"SpecCentCutoff", @"NewParamId"]) {
+    ...
+}
+```
+
+No Swift changes are required as long as the new parameter ID already appears in `ParameterStore.specs` (otherwise the callback's `firstIndex(where:)` lookup will return `nil` and the update will silently no-op). The handler's per-call cost is unaffected by the size of the watched set — `std::set::find` is logarithmic and the dispatch overhead dominates.
 
 ---
 
