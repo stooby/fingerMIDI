@@ -248,7 +248,7 @@ struct NumberInputCell: View {
                 .onChange(of: isFocused) { _, focused in
                     if !focused { commit() }
                 }
-                .onSubmit { commit() }
+                .onSubmit { isFocused = false }
             Text(param.label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -271,6 +271,48 @@ struct NumberInputCell: View {
         }
         let clamped = max(param.min, min(param.max, parsed))
         editText = formatted(clamped)
+        onCommit(clamped)
+    }
+}
+
+// MARK: - InputValueField
+
+struct InputValueField: View {
+    let value: Float
+    let min: Float
+    let max: Float
+    let format: (Float) -> String
+    let onCommit: (Float) -> Void
+
+    @State private var editText = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("", text: $editText)
+            .textFieldStyle(.plain)
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(width: 52)
+            .focused($isFocused)
+            .onAppear { editText = format(value) }
+            .onChange(of: value) { _, new in
+                if !isFocused { editText = format(new) }
+            }
+            .onChange(of: isFocused) { _, focused in
+                if !focused { commit() }
+            }
+            .onSubmit { isFocused = false }
+    }
+
+    private func commit() {
+        guard let parsed = Float(editText) else {
+            editText = format(value)
+            return
+        }
+        let clamped = parsed < min ? min : parsed > max ? max : parsed
+        editText = format(clamped)
         onCommit(clamped)
     }
 }
@@ -898,10 +940,13 @@ struct ContentView: View {
                 .font(.caption2)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
-            Text(formattedValue(store.values[i], param: param))
-                .font(.caption2)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+            InputValueField(
+                value: store.values[i],
+                min: param.min,
+                max: param.max,
+                format: { formattedValue($0, param: param) },
+                onCommit: { store.set(value: $0, at: i) }
+            )
         }
     }
 
