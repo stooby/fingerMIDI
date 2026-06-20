@@ -1309,11 +1309,11 @@ Built once at init by combining the whitelist metadata with RNBO-queried values.
 | `ControlType` | SwiftUI control | Notes |
 |---|---|---|
 | `.toggle` | `Button` (bordered, tinted when on) | Flips between `0.0` and `1.0`; icon shows `checkmark.circle.fill` / `circle` |
-| `.rotary` | `RotarySlider` (`NSViewRepresentable` wrapping `NSSlider`, `sliderType = .circular`) | 4-column `LazyVGrid`; label and current value displayed below the knob |
+| `.rotary` | `RotarySlider` (pure SwiftUI `View` using `Canvas` + `DragGesture`) | 4-column `LazyVGrid`; label and current value displayed below the knob; arc sweeps 270° from ~7:30 (min) to ~4:30 (max); vertical drag changes value (Shift = 10× finer); double-click resets to `initialOverride ?? defaultValue` |
 | `.discrete` | SwiftUI `Slider(step: 1)` | Optional `Randomize` button (`Param.hasRandomize`); sends a fixed trigger value (`9`) directly via `setParameter` without updating `values[]` |
 | `.numberInput` | `NumberInputCell` — text field + label | Displayed in the same `HStack` row as toggle buttons, right of a `Divider`; commits on Return or focus loss; clamps to `param.min…param.max` |
 
-`RotarySlider`'s `updateNSView` guards against re-entrancy with a `0.001` threshold — without this, the `NSSlider` action → binding update → `updateNSView` cycle can fight itself during fast drags.
+`RotarySlider` is platform-agnostic (no `NSViewRepresentable`/`UIViewRepresentable`) and works unchanged on macOS and iOS. Drag sensitivity is `150 px / full range`; holding Shift multiplies that by 10×. The `#if os(macOS)` block inside `dragGesture` reads `NSEvent.modifierFlags` for the Shift check; on iOS the fine flag is always `false`.
 
 **`NumberInputCell`** is a standalone `View` struct (before `ContentView` in `ContentView.swift`) with its own `@State` text buffer and `@FocusState`. On commit it parses a `Float` from the text, clamps to `param.min…param.max`, and calls `onCommit(clamped)` → `store.set(value:at:)`. The display reverts to the last valid value on unparseable input. Decimal precision adapts to the parameter's range: `%.0f` for range > 10, `%.2f` for range > 1, `%.3f` for range ≤ 1. While the field is focused, external value changes (e.g. from `pushAllValuesToEngine`) do not overwrite `editText` mid-edit.
 

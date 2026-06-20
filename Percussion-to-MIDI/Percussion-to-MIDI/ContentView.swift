@@ -7,39 +7,94 @@
 
 import Combine
 import SwiftUI
-import AppKit
 import UniformTypeIdentifiers
 import SwiftMIDIFile
 
-// MARK: - RotarySlider (NSSlider with .circular style)
+// MARK: - RotarySlider
 
-struct RotarySlider: NSViewRepresentable {
+struct RotarySlider: View {
     @Binding var value: Float
     let min: Float
     let max: Float
+    var resetValue: Float? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    // 270° clockwise sweep from ~7:30 (min) to ~4:30 (max).
+    // SwiftUI arc angles: 0° = 3 o'clock, positive = clockwise on screen.
+    private static let startDeg: Double = 135
+    private static let sweepDeg: Double = 270
+    // Pixels of vertical drag to traverse the full min→max range.
+    private static let sensitivity: CGFloat = 150
 
-    func makeNSView(context: Context) -> NSSlider {
-        let s = NSSlider()
-        s.sliderType = .circular
-        s.minValue = Double(min)
-        s.maxValue = Double(max)
-        s.floatValue = value
-        s.target = context.coordinator
-        s.action = #selector(Coordinator.changed(_:))
-        return s
+    @State private var dragStartValue: Float? = nil
+
+    private var normalized: Double {
+        guard max > min else { return 0 }
+        let t = Double((value - min) / (max - min))
+        return t < 0 ? 0 : t > 1 ? 1 : t
     }
 
-    func updateNSView(_ nsView: NSSlider, context: Context) {
-        guard abs(nsView.floatValue - value) > 0.001 else { return }
-        nsView.floatValue = value
+    private func angleDeg(for t: Double) -> Double {
+        Self.startDeg + t * Self.sweepDeg
     }
 
-    class Coordinator: NSObject {
-        var parent: RotarySlider
-        init(_ parent: RotarySlider) { self.parent = parent }
-        @objc func changed(_ sender: NSSlider) { parent.value = sender.floatValue }
+    var body: some View {
+        Canvas { ctx, size in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let radius = Swift.min(size.width, size.height) / 2 - 3
+            let arcWidth: CGFloat = 3.5
+            let t = normalized
+
+            // Background arc (full 270° sweep)
+            var bg = Path()
+            bg.addArc(center: center, radius: radius,
+                      startAngle: .degrees(Self.startDeg),
+                      endAngle: .degrees(Self.startDeg + Self.sweepDeg),
+                      clockwise: false)
+            ctx.stroke(bg, with: .color(.gray.opacity(0.3)), lineWidth: arcWidth)
+
+            // Value arc (accent color, min to current)
+            if t > 0 {
+                var fill = Path()
+                fill.addArc(center: center, radius: radius,
+                            startAngle: .degrees(Self.startDeg),
+                            endAngle: .degrees(angleDeg(for: t)),
+                            clockwise: false)
+                ctx.stroke(fill, with: .color(.accentColor), lineWidth: arcWidth)
+            }
+
+            // Tick indicator
+            let rad = angleDeg(for: t) * .pi / 180
+            let cosA = CGFloat(cos(rad))
+            let sinA = CGFloat(sin(rad))
+            var tick = Path()
+            tick.move(to: CGPoint(x: center.x + cosA * radius * 0.38,
+                                  y: center.y + sinA * radius * 0.38))
+            tick.addLine(to: CGPoint(x: center.x + cosA * radius * 0.80,
+                                     y: center.y + sinA * radius * 0.80))
+            ctx.stroke(tick, with: .color(.white.opacity(0.9)), lineWidth: 2)
+        }
+        .gesture(dragGesture)
+        .onTapGesture(count: 2) {
+            if let reset = resetValue { value = reset }
+        }
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { drag in
+                if dragStartValue == nil { dragStartValue = value }
+                let base = dragStartValue ?? value
+                #if os(macOS)
+                let fine = NSEvent.modifierFlags.contains(.shift)
+                #else
+                let fine = false
+                #endif
+                let s = fine ? Self.sensitivity * 10 : Self.sensitivity
+                let delta = Float(-drag.translation.height / s) * (max - min)
+                let raw = base + delta
+                value = raw < min ? min : raw > max ? max : raw
+            }
+            .onEnded { _ in dragStartValue = nil }
     }
 }
 
@@ -835,8 +890,9 @@ struct ContentView: View {
             get: { store.values[i] },
             set: { store.set(value: $0, at: i) }
         )
+        let resetValue = ParameterStore.specs[param.rnboId]?.initialOverride ?? param.defaultValue
         VStack(spacing: 4) {
-            RotarySlider(value: binding, min: param.min, max: param.max)
+            RotarySlider(value: binding, min: param.min, max: param.max, resetValue: resetValue)
                 .frame(width: 52, height: 52)
             Text(param.label)
                 .font(.caption2)
