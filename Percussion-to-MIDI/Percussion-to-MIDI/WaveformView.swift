@@ -5,6 +5,11 @@
 
 import SwiftUI
 
+// Hardcoded fallback for the RNBO patch's I/O processing latency.
+// Replace with a dynamic value passed via midiLatencyCompensationMs once the
+// patch exposes a "processingLatency" outport.
+private let rnboProcessingLatencyMs: Double = 40.0
+
 // MARK: - MIDINoteEvent
 
 struct MIDINoteEvent {
@@ -43,6 +48,7 @@ struct WaveformView: View {
     let onSeek: ((Double) -> Void)?
     var midiNotes: [MIDINoteEvent] = []
     var totalDurationMs: Double = 0
+    var midiLatencyCompensationMs: Double = rnboProcessingLatencyMs
 
     var body: some View {
         GeometryReader { geo in
@@ -75,7 +81,7 @@ struct WaveformView: View {
                         note == 38 ? size.height * 0.68 : size.height * 0.84
                     }
                     for noteEvent in midiNotes {
-                        let x = size.width * (noteEvent.onsetMs / totalDurationMs)
+                        let x = max(0, size.width * ((noteEvent.onsetMs - midiLatencyCompensationMs) / totalDurationMs))
                         let w = max(2, size.width * (noteEvent.durationMs / totalDurationMs))
                         let y = yForNote(noteEvent.note) - stripHeight / 2
                         let rect = CGRect(x: x, y: y, width: w, height: stripHeight)

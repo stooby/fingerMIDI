@@ -638,7 +638,7 @@ The overlay is populated from two sources:
 #### Visual design
 
 Two horizontal strips occupy the lower third of the waveform view. Each detected note is drawn as a semi-transparent filled rounded rectangle whose:
-- **x-position** maps `onsetMs / totalDurationMs` to view width
+- **x-position** scales `(onsetMs - midiLatencyCompensationMs) / totalDurationMs` by view width to a horizontal start coordinate, compensating for the RNBO patch's I/O processing latency so rectangles align visually with their waveform onsets (clamped to 0 so notes near the file start don't render off-screen)
 - **width** maps `durationMs / totalDurationMs` to view width (minimum 2 pt so zero-width events are still visible)
 - **y-position** is fixed per note number: D1 strip sits above the C1 strip, reflecting their relative pitch
 - **color** distinguishes the two drums: C1 (kick) in warm orange, D1 (snare) in cyan
@@ -715,16 +715,30 @@ The shared `_midiCapture` buffer is safe to use for both paths: `_runOfflineLoop
 
 #### `WaveformView` update
 
-`midiNotes: [MIDINoteEvent]` and `totalDurationMs: Double` parameters added. Drawing pass between waveform stroke and playhead line:
+`midiNotes: [MIDINoteEvent]` and `totalDurationMs: Double` parameters added. Drawing pass between waveform stroke and playhead line.
+
+**Latency compensation** — the RNBO patch's I/O processing introduces a consistent delay between a physical onset and the MIDI note timestamp it emits (empirically ~40 ms). Without compensation the overlay rectangles land visibly to the right of their waveform onsets. Two additions handle this:
+
+- `private let rnboProcessingLatencyMs: Double = 40.0` — file-scope constant (hardcoded fallback). When a future update adds a `processingLatency` outport to the RNBO patch, replace this with the dynamic value passed through `midiLatencyCompensationMs`.
+- `var midiLatencyCompensationMs: Double = rnboProcessingLatencyMs` — `WaveformView` property. Defaults to the constant so no call-site changes are required today; callers can pass a dynamic value later without any structural changes.
+
+The x-position formula shifts each onset left by the latency amount and clamps to zero:
 
 ```swift
+// file-scope constant (WaveformView.swift)
+private let rnboProcessingLatencyMs: Double = 40.0
+
+// WaveformView property
+var midiLatencyCompensationMs: Double = rnboProcessingLatencyMs
+
+// drawing loop
 if !midiNotes.isEmpty && totalDurationMs > 0 {
     let stripHeight: CGFloat = 12
     let yForNote: (UInt8) -> CGFloat = { note in
         note == 38 ? size.height * 0.68 : size.height * 0.84
     }
     for noteEvent in midiNotes {
-        let x = size.width * (noteEvent.onsetMs / totalDurationMs)
+        let x = max(0, size.width * ((noteEvent.onsetMs - midiLatencyCompensationMs) / totalDurationMs))
         let w = max(2, size.width * (noteEvent.durationMs / totalDurationMs))
         let y = yForNote(noteEvent.note) - stripHeight / 2
         let rect = CGRect(x: x, y: y, width: w, height: stripHeight)
