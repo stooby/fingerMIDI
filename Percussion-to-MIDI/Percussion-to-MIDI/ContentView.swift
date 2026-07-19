@@ -429,15 +429,18 @@ struct ContentView: View {
                         engine.setPlayheadPosition(
                             Int64(fraction * Double(engine.totalFrameCount))
                         )
-                        // Re-anchor the real-time timestamp offset to the new position and
-                        // discard open note-ons. Only reset coverage if the full file hasn't
-                        // already been covered — seeking after full coverage is just navigation.
+                        // Start a fresh real-time capture timeline at the new position:
+                        // beginRealTimeCapture() clears the ring; setPlayheadPosition() (above)
+                        // also arms the post-seek MIDI settling window. Discard open note-ons;
+                        // reset coverage only if the full file hasn't already been covered
+                        // (seeking after full coverage is just navigation).
                         engine.beginRealTimeCapture()
                         openRealTimeNoteOns.removeAll()
                         if !fullRealTimeCoverageAchieved { realTimeCoverageMs = 0 }
                     },
                     midiNotes: midiNoteOverlay,
-                    totalDurationMs: totalDurationMs
+                    totalDurationMs: totalDurationMs,
+                    midiLatencyCompensationMs: engine.processingLatencyMs
                 )
             }
             .frame(height: 150)

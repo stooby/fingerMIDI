@@ -5,11 +5,6 @@
 
 import SwiftUI
 
-// Hardcoded fallback for the RNBO patch's I/O processing latency.
-// Replace with a dynamic value passed via midiLatencyCompensationMs once the
-// patch exposes a "processingLatency" outport.
-private let rnboProcessingLatencyMs: Double = 40.0
-
 // MARK: - MIDINoteEvent
 
 struct MIDINoteEvent {
@@ -48,7 +43,10 @@ struct WaveformView: View {
     let onSeek: ((Double) -> Void)?
     var midiNotes: [MIDINoteEvent] = []
     var totalDurationMs: Double = 0
-    var midiLatencyCompensationMs: Double = rnboProcessingLatencyMs
+    // Supplied by the caller from AudioEngine.processingLatencyMs (the single source
+    // of truth) — no local fallback, so the overlay shift can never drift from the
+    // value the audio engine's settling window uses.
+    var midiLatencyCompensationMs: Double
 
     var body: some View {
         GeometryReader { geo in

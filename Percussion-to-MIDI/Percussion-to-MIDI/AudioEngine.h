@@ -56,6 +56,13 @@
 /// Hardware sample rate in Hz. Used by the Swift layer to convert frame counts to milliseconds.
 @property (readonly) double sampleRate;
 
+/// The RNBO patch's onset-detection / processing latency in milliseconds — the delay between an
+/// audio onset and RNBO emitting its MIDI event. Single source of truth (currently a hardcoded
+/// placeholder; a future update will feed it from the patch's `processingLatency` outport). Used by
+/// the overlay to left-shift MIDI blocks into alignment with the waveform, and internally to size
+/// the post-seek MIDI settling window.
+@property (readonly) double processingLatencyMs;
+
 /// Returns all MIDI events accumulated since the last call (or since the last reset) and clears
 /// the buffer. Each element is an NSDictionary with keys:
 ///   "timestampMs" → NSNumber (double) — RNBO engine time in milliseconds
@@ -64,16 +71,16 @@
     NS_SWIFT_NAME(collectAndClearMidiEvents());
 
 /// Call on the main thread immediately before start() (and after setPlayheadPosition()
-/// when seeking during playback) to initialise the timestamp anchor used by
-/// collectAndClearRealTimeMidiEvents(). Records the current playhead frame and sets
-/// a flag for the render block to capture the matching RNBO engine time on the next
-/// process() call.
+/// when seeking during playback) to start a fresh real-time capture timeline. Discards
+/// any events still buffered from the previous session so stale events aren't drawn
+/// against the new timeline. Timestamps are stamped per-block on the audio thread, so
+/// no cross-thread anchor is set here.
 - (void)beginRealTimeCapture NS_SWIFT_NAME(beginRealTimeCapture());
 
-/// Returns all MIDI events accumulated during real-time playback since the last call,
-/// with timestamps converted to file-relative milliseconds via the anchor set by
-/// beginRealTimeCapture(). Same dictionary format as collectAndClearMidiEvents().
-/// Safe to call from the main thread.
+/// Returns all MIDI events accumulated during real-time playback since the last call.
+/// Timestamps are already file-relative milliseconds — converted on the audio thread
+/// when each event was produced. Same dictionary format as
+/// collectAndClearMidiEvents(). Safe to call from the main thread.
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearRealTimeMidiEvents
     NS_SWIFT_NAME(collectAndClearRealTimeMidiEvents());
 

@@ -722,6 +722,11 @@ The shared `_midiCapture` buffer is safe to use for both paths: `_runOfflineLoop
 - `private let rnboProcessingLatencyMs: Double = 40.0` — file-scope constant (hardcoded fallback). When a future update adds a `processingLatency` outport to the RNBO patch, replace this with the dynamic value passed through `midiLatencyCompensationMs`.
 - `var midiLatencyCompensationMs: Double = rnboProcessingLatencyMs` — `WaveformView` property. Defaults to the constant so no call-site changes are required today; callers can pass a dynamic value later without any structural changes.
 
+> **Superseded by Step 14.35:** the latency figure was moved to `AudioEngine` as the single source of truth
+> (`kRnboProcessingLatencyMs`, exposed via the `processingLatencyMs` property). `WaveformView` no longer holds
+> `rnboProcessingLatencyMs`; `midiLatencyCompensationMs` is now a required input, passed by `ContentView` as
+> `engine.processingLatencyMs`. The snippet below reflects the original Step-14 form.
+
 The x-position formula shifts each onset left by the latency amount and clamps to zero:
 
 ```swift
@@ -1154,6 +1159,121 @@ sample arrays on import instead). `SpectralMsg` is 16 bytes, so its ring is ~32 
 
 ---
 
+### Step 14.3 - Seek-During-Playback MIDI-block Misplacement Bug Fix (IMPLEMENTED)
+
+Fixes a bug — latent since Step 14 — where seeking the transport mid-playback could draw a MIDI note-block at
+the **new** playhead position when it belonged at/just before the **previous** position.
+
+#### Root cause — the anchor was applied at poll time
+
+Step 14 reconstructed real-time timestamps in `-collectAndClearRealTimeMidiEvents` using a single
+cross-thread **anchor pair** (`_rtAnchorPlayheadFrame`, `_rtAnchorRnboTimeBits`) applied *at poll time*:
+`fileMs = anchorFileMs + (event.getTime() − anchorRnboMs)`. A seek installed a *new* anchor
+(`anchorFileMs = P_new`) via `-beginRealTimeCapture`, so any event produced **before** the seek but converted
+**after** it was re-timed to `≈ P_new` and drawn at the wrong place. Step 14.25's `resetRealTimeRing()`
+shrank the window (from a full ~66 ms poll interval to a single render block) but a narrow race remained: an
+in-flight block draining just after the reset, and the render block reading `pos` *before* the anchor check
+(so the anchor-capture block could pair a `P_new` file frame with `P_old` audio).
+
+#### Fix — convert timestamps per-block, on the audio thread
+
+Each event is now stamped with its file-relative time **on the audio thread, in the block that produced it**,
+from that block's own playhead + RNBO-time base. Events are "born" correctly-timed and are inherently
+seek-immune — a `P_old` block's events land at `P_old`, a `P_new` block's at `P_new`, regardless of when a
+seek lands relative to the render callback. There is no mutable cross-thread anchor left to corrupt.
+
+Implemented in `AudioEngine.mm` / `.h` (offline path and public API surface unchanged):
+
+- New RT ring element `struct RtMidiEvent { double fileMs; uint8_t bytes[3]; uint8_t len; }`. The real-time
+  ring stores already-converted timestamps; the offline vector still holds raw `RNBO::MidiEvent`.
+- `MidiEventCapture::setBlockBase(fileMs, rnboMs, totalMs)` — producer-thread-only (no atomics), set by the
+  render block once per block before `drain()`.
+- `handleMidiEvent` (real-time) computes `fileMs = blockBaseFileMs + (event.getTime() − blockBaseRnboMs)`,
+  wraps with `std::fmod(fileMs, blockTotalMs)` for the transport loop, and stores `{fileMs, bytes, len}` in
+  the ring. `drainRealTimeRing()` now returns `std::vector<RtMidiEvent>`.
+- Render block: normalises `pos` once, then sets the block base from that `pos` and `core->getCurrentTime()`
+  (captured *before* `process()`) every block. The old deferred-anchor capture branch is deleted.
+- Retired the deferred anchor entirely: removed `_needsRtAnchor` / `_rtAnchorPlayheadFrame` /
+  `_rtAnchorRnboTimeBits` (ivars + captured render-block locals), the capture branch, and all anchor math from
+  `-collectAndClearRealTimeMidiEvents` (which now reads `fileMs` straight through). `-beginRealTimeCapture` is
+  reduced to `resetRealTimeRing()` (kept as a UX choice — surviving events are already correctly timed).
+- `fmod` moved to the audio thread (a few scalar ops + one `getCurrentTime()` per block; no alloc, no lock —
+  RT-safe); `#include <cmath>` added.
+
+#### Verification
+1. Hammer far seeks mid-playback (the original repro) → no block lands at the new playhead that belongs near
+   the old one.
+2. Loop the transport across the seek point → post-wrap events stay in `[0, totalMs)` (the `fmod` wrap now
+   runs on the audio thread).
+3. Export MIDI on a long dense file → event count still matches `Analyze Onsets` (offline path untouched).
+
+#### Known residual (addressed by Step 14.35)
+Under **pathological** rapid seeking, a few spurious / slightly-early blocks can still appear in the **live
+overlay**. This is **not** a timestamp race — it is RNBO's ~40 ms onset-detection latency and the input step
+discontinuity crossing the seek boundary: an onset from pre-seek audio is emitted a few blocks *after* the
+seek and stamped at the new playhead (then drawn ~40 ms early by the overlay's `processingLatencyMs`
+left-shift), and abrupt seeks also provoke discontinuity false-triggers. No per-block timestamp math can
+resolve it — the event genuinely belongs to pre-seek audio. Offline analysis/export is unaffected.
+
+---
+
+### Step 14.35 - Post-Seek MIDI Settling Window (IMPLEMENTED)
+
+Suppresses the residual live-overlay artifact described at the end of Step 14.3 (RNBO's detection latency and
+the seek discontinuity leaking spurious / pre-seek onsets into the block(s) just after a seek).
+
+#### Why Step 14.3 can't fix it
+RNBO emits each MIDI event ~40 ms *after* the true audio onset (detection latency; the overlay compensates by
+left-shifting blocks by `AudioEngine.processingLatencyMs`). An onset in pre-seek audio is therefore emitted a
+few blocks after a seek, and per-block timestamping (correctly) stamps it at the new playhead — there is no
+correct post-seek position for an event that belongs to pre-seek audio. Abrupt seeks also create input step
+discontinuities the onset detector can register as false onsets.
+
+#### Idea
+After each seek, suppress **real-time** MIDI capture for exactly the detection latency, measured in
+**RNBO-time** (not wall-clock, so it tracks processed audio and is independent of the 15 fps poll
+granularity). That window is precisely long enough to flush the latency pipeline, dropping both the in-flight
+pre-seek onsets **and** the discontinuity false-triggers in one stroke.
+
+**Window = latency exactly (optimal).** Suppress while `blockRnbo < seekRnbo + latency`. A pre-seek onset
+(true time `< seekRnbo`) is emitted `< seekRnbo + latency` → dropped; a real post-seek onset (true time
+`≥ seekRnbo`) is emitted `≥ seekRnbo + latency` → kept. So `window = latency` drops every in-flight pre-seek
+onset while keeping every real post-seek one — a larger window would start eating real onsets, a smaller one
+would leak pre-seek ones.
+
+#### Single source of truth for the latency
+`AudioEngine` owns the figure as file-scope `kRnboProcessingLatencyMs` (hardcoded 40 ms placeholder; a future
+update feeds it from the patch's `processingLatency` outport). It is used **directly** by the settling window
+on the audio thread **and** exposed to Swift via the `processingLatencyMs` property, which `ContentView`
+passes into `WaveformView.midiLatencyCompensationMs` (the overlay's left-shift). `WaveformView` no longer
+holds its own latency constant, so the overlay shift and the settle window can never drift. There is **no**
+separate `kSeekSettleMs` constant — the settle duration *is* `kRnboProcessingLatencyMs`.
+
+#### Design (RT-safe, seek-only)
+- `MidiEventCapture`:
+  - `armSeekSettle()` (main thread) → sets `std::atomic<bool> _armSeekSettle`.
+  - In `setBlockBase` (audio thread, every block): `if (_armSeekSettle.exchange(false)) _settleUntilRnboMs =
+    rnboMs + kRnboProcessingLatencyMs;`.
+  - In `handleMidiEvent` (real-time, right after the offline-mode check): `if (_blockBaseRnboMs <
+    _settleUntilRnboMs) return;`. `_settleUntilRnboMs` is audio-thread-local.
+- `-setPlayheadPosition` calls `_midiCapture.armSeekSettle()` — the **seek-only** hook (called only from the
+  waveform seek handler), so play-start is unaffected and never suppresses a genuine first onset.
+
+#### Trade-off
+Essentially none: `window = latency` keeps all real post-seek onsets. At most, because the RNBO-time check
+uses the block-start time, a real onset landing within ~one render block of the window's edge could be missed
+**in the live overlay only**; the offline `Analyze Onsets` / `Export MIDI` path is unaffected and still
+captures everything. Negligible at a manual seek point.
+
+#### Verification
+1. Reproduce the Step 14.3 symptom (time a seek right around an onset) → spurious / slightly-early blocks near
+   the new playhead no longer appear.
+2. Seek to a quiet region, then let onsets play a beat later → they still appear (no over-suppression).
+3. Play without seeking → overlay unchanged (settle only arms on `-setPlayheadPosition`).
+4. Export MIDI → event count still matches `Analyze Onsets` (offline path untouched).
+
+---
+
 ### Step 14.5 - SpecFlatCutoff and SpecCentCutoff HorizontalSliderView Controls
 
 Replaces the generic rotary knobs for `SpecCentCutoff` and `SpecFlatCutoff` with two purpose-built
@@ -1263,14 +1383,19 @@ thread. A third `EventHandler` interface is still added (one subclass per event 
   value; }` — `feature` a plain `int`/enum discriminator (0 = centroid, 1 = flatness), **never an
   `NSString`** — and written into `MessageEventCapture`'s **own dedicated** lock-free SPSC ring buffer,
   `SpectralMsg _ring[kEventRingCapacity]`. This is a **separate ring instance** from the
-  `MidiEvent _ring[kEventRingCapacity]` in `MidiEventCapture` (Step 14.25) — same design, drop-newest
-  policy, and `kEventRingCapacity` constant, but a distinct buffer holding `SpectralMsg` slots. Drop-newest
+  `RtMidiEvent _ring[kEventRingCapacity]` in `MidiEventCapture` (Steps 14.25 / 14.3) — same design,
+  drop-newest policy, and `kEventRingCapacity` constant, but a distinct buffer holding `SpectralMsg` slots.
+  Drop-newest
   when full; strict single-producer/single-consumer, no `malloc`, no lock. **No `dispatch_async`, no ObjC
   object, no callback block touches the audio thread.** `eventsAvailable()` is a no-op; `drain()` is a thin
   `drainEvents()` wrapper, as with the sibling captures.
 - Because the spectral capture has no lossless offline consumer, it needs only the ring half of the Step
-  14.25 pattern — no offline-mode fallback vector and no `-beginRealTimeCapture` reset. Its
-  `collectAndClear()` drains its own `SpectralMsg _ring` (`[readIdx, writeIdx)`) into a
+  14.25 pattern — **skip `MidiEventCapture`'s MIDI-specific machinery**: no offline-mode fallback vector, no
+  `-beginRealTimeCapture` reset, **no per-block timestamp conversion** (`setBlockBase` / the `_blockBase*`
+  members / the `fileMs` field), and **no seek settling window** (`armSeekSettle` / `_settleUntilRnboMs`).
+  `SpectralMsg` carries only `{feature, value}` — spectral bars are plotted on the *value* axis, not a time
+  axis, and the histogram is playhead-position-independent, so neither timestamps nor seek handling apply.
+  Its `collectAndClear()` drains its own `SpectralMsg _ring` (`[readIdx, writeIdx)`) into a
   `std::vector<SpectralMsg>` on the **main thread**.
 - A third `ParameterEventInterface` (`_messageListenerInterface`, handler `_messageCapture`) is created in
   `-init` and `.reset()` in `-dealloc` before the handler is destroyed. `_messageCapture.drain()` is

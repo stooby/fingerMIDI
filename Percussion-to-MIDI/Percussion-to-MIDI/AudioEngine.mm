@@ -10,21 +10,41 @@
 #include "rnbo/RNBO.h"
 #include "rnbo_snare-kick-detector.cpp"   // generated RNBO patch file
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <set>
 #include <vector>
 
 // Capacity of the lock-free SPSC ring buffers that hand real-time events (MIDI
-// note events here; spectral messages in Step 14.5) from the audio render thread
+// note events, and later a spectral-message capture) from the audio render thread
 // to the main thread without allocating or locking on the audio thread. Power of
 // two so index wrap is a bitmask, not a modulo. Sized to absorb several seconds
 // of main-thread unresponsiveness at the onset detector's max rate before it
-// drops (drop-newest). See ARCHITECTURE.md Step 14.25.
+// drops (drop-newest).
 static constexpr size_t kEventRingCapacity = 2048;
 
+// The RNBO patch's onset-detection / processing latency in ms — the delay between
+// an audio onset and RNBO emitting its MIDI event. This is the single source of
+// truth for that figure: it (a) sizes the post-seek MIDI settling window (Step
+// 14.35) here on the audio thread, and (b) is exposed to Swift via
+// -processingLatencyMs so WaveformView can left-shift MIDI blocks into alignment
+// with the waveform. Hardcoded placeholder for now; a future update will feed it
+// from the patch's `processingLatency` outport message.
+static constexpr double kRnboProcessingLatencyMs = 40.0;
+
+// A real-time MIDI event already converted to a file-relative timestamp on the
+// audio thread. Carries the raw 1–3 status bytes
+// plus fileMs, so the main-thread consumer does no anchor math and a later seek
+// cannot retroactively re-time it.
+struct RtMidiEvent {
+    double  fileMs;
+    uint8_t bytes[3];
+    uint8_t len;
+};
+
 // ---------------------------------------------------------------------------
-// MIDI event accumulator (real-time safe — see ARCHITECTURE.md Step 14.25)
+// MIDI event accumulator (real-time safe)
 //
 // Subclasses RNBO::EventHandler to capture outgoing MidiEvents from the RNBO
 // patch. handleMidiEvent() runs on whatever thread calls drain() after
@@ -33,36 +53,55 @@ static constexpr size_t kEventRingCapacity = 2048;
 // capture keeps two separate buffers and routes by _offlineMode:
 //
 //  • Real-time path (default): a lock-free single-producer / single-consumer
-//    ring buffer. The producer (audio thread) never allocates and never locks;
-//    on overflow it drops the newest event (drop-newest keeps the producer from
-//    touching the consumer-owned read index, preserving strict SPSC). Overflow
-//    is acceptable — the real-time overlay is a best-effort preview and the
-//    authoritative MIDI is the offline export. Drained by drainRealTimeRing()
-//    on the main thread.
+//    ring of RtMidiEvent. Each event's file-relative timestamp is computed on
+//    the audio thread from the producing block's playhead + RNBO-time base
+//    (setBlockBase), so a concurrent seek can never retroactively
+//    re-time it and the main-thread consumer does no anchor math. The producer
+//    never allocates and never locks; on overflow it drops the newest event
+//    (drop-newest keeps the producer off the consumer-owned read index,
+//    preserving strict SPSC). Overflow is acceptable — the overlay is a
+//    best-effort preview; the authoritative MIDI is the offline export. Drained
+//    by drainRealTimeRing() on the main thread.
 //
-//  • Offline path (_offlineMode == true): the original mutex-guarded vector,
-//    unchanged. Offline export must be lossless, but it runs on a background
-//    thread with no real-time deadline, so malloc and the mutex are fine (and
-//    the mutex is uncontended — producer and consumer are the same offline
-//    thread there). Drained by collectAndClear().
+//  • Offline path (_offlineMode == true): the original mutex-guarded vector of
+//    raw RNBO::MidiEvent, unchanged. Offline export must be lossless, but it runs
+//    on a background thread with no real-time deadline, so malloc and the mutex
+//    are fine (and the mutex is uncontended — producer and consumer are the same
+//    offline thread). Drained by collectAndClear(); timestamps normalised later
+//    via _offlineRenderStartMs.
 //
 //  • _offlineMode is toggled around offline renders (true in
 //    -stopForOfflineRender, false in -resumeAfterOfflineRender before the engine
-//    restarts) and read memory_order_relaxed on the audio thread — one cheap
-//    branch per event.
+//    restarts) and read memory_order_relaxed on the audio thread.
 //
 //  • eventsAvailable() is a no-op — we call drain() explicitly after each
-//    process() so the "drain after every process block" contract holds for both
-//    loops. drain() is a thin public wrapper around EventHandler::drainEvents().
+//    process(). drain() is a thin wrapper around EventHandler::drainEvents().
 //
 //  • resetRealTimeRing() discards buffered real-time events; called from
 //    -beginRealTimeCapture (play start / seek) so each fresh timeline starts
-//    clean and stale pre-seek events are not re-timestamped against a new anchor.
+//    clean (a UX choice — surviving events are already correctly timed).
 // ---------------------------------------------------------------------------
 class MidiEventCapture : public RNBO::EventHandler {
 public:
     // Called from within process() on the audio (or offline) thread — a no-op.
     void eventsAvailable() override {}
+
+    // Set by the render block once per block, BEFORE drain(), so handleMidiEvent
+    // can convert each real-time event to a file-relative timestamp using this
+    // block's playhead (fileMs) and RNBO-time (rnboMs) base. Producer-thread only
+    // (written and read on the same audio thread), so no atomics are needed.
+    void setBlockBase(double fileMs, double rnboMs, double totalMs) {
+        _blockBaseFileMs = fileMs;
+        _blockBaseRnboMs = rnboMs;
+        _blockTotalMs    = totalMs;
+        // A seek arms a post-seek settling window: from this block
+        // until rnboMs + kRnboProcessingLatencyMs, drop real-time MIDI events so
+        // RNBO's in-flight (pre-seek) onsets and the seek discontinuity's
+        // false-triggers aren't stamped at the new playhead. exchange() consumes
+        // the one-shot arm flag; the deadline is audio-thread-local thereafter.
+        if (_armSeekSettle.exchange(false, std::memory_order_acquire))
+            _settleUntilRnboMs = rnboMs + kRnboProcessingLatencyMs;
+    }
 
     void handleMidiEvent(const RNBO::MidiEvent& event) override {
         if (_offlineMode.load(std::memory_order_relaxed)) {
@@ -71,12 +110,30 @@ public:
             _events.push_back(event);
             return;
         }
+        // Post-seek settling window: while this block's RNBO time is
+        // within kRnboProcessingLatencyMs of the last seek, drop events — they are
+        // RNBO's in-flight pre-seek onsets or the seek discontinuity's false-triggers.
+        if (_blockBaseRnboMs < _settleUntilRnboMs) return;
+
         // Real-time render thread — lock-free SPSC ring, drop-newest on full.
         const size_t w    = _writeIdx.load(std::memory_order_relaxed);
         const size_t next = (w + 1) & (kEventRingCapacity - 1);
         if (next == _readIdx.load(std::memory_order_acquire))
             return;                                  // ring full — drop newest
-        _ring[w] = event;
+
+        // Convert to a file-relative timestamp here, on the audio thread, using
+        // the base for the block that produced this event. fmod wraps
+        // events past the loop boundary back into [0, totalMs).
+        double fileMs = _blockBaseFileMs + (event.getTime() - _blockBaseRnboMs);
+        if (_blockTotalMs > 0.0) fileMs = std::fmod(fileMs, _blockTotalMs);
+
+        RtMidiEvent &slot = _ring[w];
+        slot.fileMs   = fileMs;
+        slot.len      = (uint8_t)event.getLength();
+        const uint8_t *src = event.getData();
+        slot.bytes[0] = src[0];
+        slot.bytes[1] = src[1];
+        slot.bytes[2] = src[2];
         _writeIdx.store(next, std::memory_order_release);
     }
 
@@ -87,8 +144,8 @@ public:
 
     // Drains the lock-free ring into a vector allocated on the main thread
     // (never on the producer side). Called by -collectAndClearRealTimeMidiEvents.
-    std::vector<RNBO::MidiEvent> drainRealTimeRing() {
-        std::vector<RNBO::MidiEvent> out;
+    std::vector<RtMidiEvent> drainRealTimeRing() {
+        std::vector<RtMidiEvent> out;
         const size_t w = _writeIdx.load(std::memory_order_acquire);
         size_t r = _readIdx.load(std::memory_order_relaxed);
         while (r != w) {
@@ -107,6 +164,10 @@ public:
                        std::memory_order_release);
     }
 
+    // Arm a post-seek settling window (main thread; from -setPlayheadPosition). The
+    // audio thread turns it into an RNBO-time deadline on its next block.
+    void armSeekSettle() { _armSeekSettle.store(true, std::memory_order_release); }
+
     // --- Offline path (background-thread producer + consumer) --------------
 
     // Toggled around offline renders (main thread). Routes handleMidiEvent to
@@ -124,13 +185,25 @@ public:
     }
 
 private:
-    // Real-time path: lock-free SPSC ring. Producer (audio thread) owns
-    // _writeIdx; consumer (main thread) owns _readIdx.
-    RNBO::MidiEvent      _ring[kEventRingCapacity];
+    // Real-time path: lock-free SPSC ring of already-timestamped events. Producer
+    // (audio thread) owns _writeIdx; consumer (main thread) owns _readIdx.
+    RtMidiEvent          _ring[kEventRingCapacity]{};
     std::atomic<size_t>  _writeIdx{0};
     std::atomic<size_t>  _readIdx{0};
 
-    // Offline path: lossless mutex-guarded vector.
+    // Per-block conversion base, written & read only on the audio (producer)
+    // thread — set by setBlockBase() before each drain(), read in handleMidiEvent.
+    double _blockBaseFileMs = 0.0;
+    double _blockBaseRnboMs = 0.0;
+    double _blockTotalMs    = 0.0;
+
+    // Post-seek settling window. _armSeekSettle: one-shot main→audio
+    // signal set by armSeekSettle(). _settleUntilRnboMs: audio-thread-local RNBO-time
+    // deadline; real-time events whose block base precedes it are dropped.
+    std::atomic<bool> _armSeekSettle{false};
+    double            _settleUntilRnboMs = 0.0;
+
+    // Offline path: lossless mutex-guarded vector of raw events.
     std::mutex                   _mutex;
     std::vector<RNBO::MidiEvent> _events;
 
@@ -267,15 +340,9 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // this offset to produce file-relative times.
     RNBO::MillisecondTime _offlineRenderStartMs;
 
-    // Real-time playback timestamp anchor. Set by -beginRealTimeCapture (main thread)
-    // and consumed by the render block (audio thread) on the next process() call.
-    // _rtAnchorPlayheadFrame is written by the main thread before _needsRtAnchor is set,
-    // so the audio thread sees a consistent value once it observes _needsRtAnchor == true.
-    // _rtAnchorRnboTime is written by the audio thread and read by the main thread;
-    // stored as uint64_t bit-pattern to allow std::atomic usage with a double.
-    std::atomic<bool>     _needsRtAnchor;
-    std::atomic<int64_t>  _rtAnchorPlayheadFrame;
-    std::atomic<uint64_t> _rtAnchorRnboTimeBits; // IEEE 754 double stored as uint64_t
+    // Real-time MIDI timestamps are converted to file-relative ms on the audio
+    // thread, per block (MidiEventCapture::setBlockBase), so there is
+    // no cross-thread playback anchor to store here.
 }
 
 - (instancetype)init {
@@ -381,8 +448,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     std::atomic<int64_t> *framesPtr      = &_pcmFrameCount;
     std::atomic<int64_t> *headPtr        = &_playhead;
     std::atomic<bool>    *isPlayingPtr        = &_isPlaying;
-    std::atomic<bool>    *needsRtAnchorPtr   = &_needsRtAnchor;
-    std::atomic<uint64_t>*rtAnchorBitsPtr    = &_rtAnchorRnboTimeBits;
+    double                sampleRate          = _engineSampleRate;
 
     AVAudioFormat *format = [[AVAudioFormat alloc]
         initStandardFormatWithSampleRate:_engineSampleRate channels:2];
@@ -400,20 +466,19 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
             int64_t  pos    = headPtr->load(std::memory_order_relaxed);
             bool     playing = isPlayingPtr->load(std::memory_order_relaxed);
 
-            // Capture real-time anchor: record RNBO engine time at the playhead frame
-            // stored by beginRealTimeCapture(). Must happen before process() advances time.
-            if (needsRtAnchorPtr->load(std::memory_order_acquire) && playing) {
-                RNBO::MillisecondTime t = core->getCurrentTime();
-                uint64_t bits;
-                memcpy(&bits, &t, sizeof(bits));
-                rtAnchorBitsPtr->store(bits, std::memory_order_release);
-                needsRtAnchorPtr->store(false, std::memory_order_release);
-            }
+            // Normalise the playhead once (guards against pos at/past total from an
+            // external setPlayheadPosition right at the file boundary), then hand the
+            // MIDI capture this block's timestamp base BEFORE process() advances RNBO
+            // time. Pairing THIS block's playhead (fileMs) with its RNBO-time base lets
+            // handleMidiEvent stamp events with file-relative time on the audio thread —
+            // immune to concurrent seeks.
+            if (total > 0 && pos >= total) pos %= total;
+            double blockBaseFileMs = (sampleRate > 0.0) ? (double)pos / sampleRate * 1000.0 : 0.0;
+            double blockTotalMs    = (sampleRate > 0.0) ? (double)total / sampleRate * 1000.0 : 0.0;
+            midiCapture->setBlockBase(blockBaseFileMs, core->getCurrentTime(), blockTotalMs);
 
             if (playing && pcmL != nullptr && total > 0) {
-                // Guard against pos landing at or past total (e.g. from an
-                // external setPlayheadPosition call right at the file boundary).
-                if (pos >= total) pos = pos % total;
+                // pos already normalised above.
 
                 // Fill RNBO input with seamless loop wrap.
                 // Single-subtract wrap is sufficient because pos < total and
@@ -480,7 +545,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     _paramCapture.setDeliveryEnabled(false);
     [_engine stop];
     // Route MIDI capture to the lossless offline buffer for the render. The engine
-    // is now stopped, so no real-time-path (ring) writes race this flip. See Step 14.25.
+    // is now stopped, so no real-time-path (ring) writes race this flip.
     _midiCapture.setOfflineMode(true);
 }
 
@@ -489,7 +554,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // state; the Swift layer re-pushes UI values via pushAllValuesToEngine() after this.
     _coreObject.prepareToProcess(_engineSampleRate, kMaxFrames);
     // Route MIDI capture back to the real-time ring BEFORE the engine restarts,
-    // so the first resumed render callback is already in real-time mode (Step 14.25).
+    // so the first resumed render callback is already in real-time mode.
     _midiCapture.setOfflineMode(false);
     [_engine prepare];
     NSError *error = nil;
@@ -719,42 +784,31 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     int64_t total = _pcmFrameCount.load(std::memory_order_relaxed);
     int64_t clamped = frame < 0 ? 0 : (frame > total ? total : frame);
     _playhead.store(clamped, std::memory_order_relaxed);
+    // Arm a post-seek MIDI settling window: RNBO's ~kRnboProcessingLatencyMs
+    // detection latency means an onset from pre-seek audio can be emitted a few blocks
+    // after the seek and stamped at the new playhead; the settling window drops those
+    // (and the seek discontinuity's false-triggers) so they aren't drawn.
+    _midiCapture.armSeekSettle();
 }
 
 - (void)beginRealTimeCapture {
-    // Snapshot the playhead frame first so the audio thread sees a stable anchor
-    // value once it observes _needsRtAnchor == true.
-    _rtAnchorPlayheadFrame.store(_playhead.load(std::memory_order_relaxed),
-                                 std::memory_order_relaxed);
-    _needsRtAnchor.store(true, std::memory_order_release);
     // Discard any real-time events still buffered from the previous transport
-    // session, so a fresh timeline (play start / seek) does not re-emit stale
-    // events against the new anchor. Consumer-side; safe while the producer runs.
+    // session so a fresh timeline (play start / seek) starts clean. Timestamps are
+    // now stamped per-block on the audio thread, so there is no anchor
+    // to set here — a seek can no longer retroactively re-time surviving events.
     _midiCapture.resetRealTimeRing();
 }
 
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearRealTimeMidiEvents {
-    // Read the anchor values. _rtAnchorRnboTimeBits is written by the audio thread
-    // (after _needsRtAnchor clears) and read here on the main thread.
-    uint64_t bits = _rtAnchorRnboTimeBits.load(std::memory_order_acquire);
-    RNBO::MillisecondTime anchorRnboMs;
-    memcpy(&anchorRnboMs, &bits, sizeof(anchorRnboMs));
-    double anchorFileMs = (double)_rtAnchorPlayheadFrame.load(std::memory_order_relaxed)
-                          / _engineSampleRate * 1000.0;
-    // Total file duration in ms — used to wrap timestamps back into [0, totalMs) after
-    // loop iterations. RNBO time advances monotonically regardless of transport looping,
-    // so without fmod every post-wrap event maps past the right edge of the waveform.
-    double totalMs = (double)_pcmFrameCount.load(std::memory_order_relaxed)
-                     / _engineSampleRate * 1000.0;
-
-    std::vector<RNBO::MidiEvent> events = _midiCapture.drainRealTimeRing();
+    // Timestamps were converted to file-relative ms on the audio thread when each
+    // event was produced — including the transport-loop fmod wrap — so
+    // there is no anchor math here; read fileMs straight through.
+    std::vector<RtMidiEvent> events = _midiCapture.drainRealTimeRing();
     NSMutableArray *result = [NSMutableArray arrayWithCapacity:events.size()];
-    for (const RNBO::MidiEvent &ev : events) {
-        NSData *bytes = [NSData dataWithBytes:ev.getData() length:(NSUInteger)ev.getLength()];
-        double ms = anchorFileMs + (ev.getTime() - anchorRnboMs);
-        if (totalMs > 0) ms = fmod(ms, totalMs);
+    for (const RtMidiEvent &ev : events) {
+        NSData *bytes = [NSData dataWithBytes:ev.bytes length:(NSUInteger)ev.len];
         [result addObject:@{
-            @"timestampMs": @(ms),
+            @"timestampMs": @(ev.fileMs),
             @"bytes":       bytes
         }];
     }
@@ -941,6 +995,10 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
 - (double)sampleRate {
     return _engineSampleRate;
+}
+
+- (double)processingLatencyMs {
+    return kRnboProcessingLatencyMs;
 }
 
 @end
