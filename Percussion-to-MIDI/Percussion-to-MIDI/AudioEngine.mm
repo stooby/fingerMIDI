@@ -15,41 +15,107 @@
 #include <set>
 #include <vector>
 
+// Capacity of the lock-free SPSC ring buffers that hand real-time events (MIDI
+// note events here; spectral messages in Step 14.5) from the audio render thread
+// to the main thread without allocating or locking on the audio thread. Power of
+// two so index wrap is a bitmask, not a modulo. Sized to absorb several seconds
+// of main-thread unresponsiveness at the onset detector's max rate before it
+// drops (drop-newest). See ARCHITECTURE.md Step 14.25.
+static constexpr size_t kEventRingCapacity = 2048;
+
 // ---------------------------------------------------------------------------
-// MIDI event accumulator
+// MIDI event accumulator (real-time safe — see ARCHITECTURE.md Step 14.25)
 //
 // Subclasses RNBO::EventHandler to capture outgoing MidiEvents from the RNBO
-// patch. Design notes:
+// patch. handleMidiEvent() runs on whatever thread calls drain() after
+// process(): the audio render thread during real-time playback, or the offline
+// render thread during export. Those two paths have opposite needs, so the
+// capture keeps two separate buffers and routes by _offlineMode:
+//
+//  • Real-time path (default): a lock-free single-producer / single-consumer
+//    ring buffer. The producer (audio thread) never allocates and never locks;
+//    on overflow it drops the newest event (drop-newest keeps the producer from
+//    touching the consumer-owned read index, preserving strict SPSC). Overflow
+//    is acceptable — the real-time overlay is a best-effort preview and the
+//    authoritative MIDI is the offline export. Drained by drainRealTimeRing()
+//    on the main thread.
+//
+//  • Offline path (_offlineMode == true): the original mutex-guarded vector,
+//    unchanged. Offline export must be lossless, but it runs on a background
+//    thread with no real-time deadline, so malloc and the mutex are fine (and
+//    the mutex is uncontended — producer and consumer are the same offline
+//    thread there). Drained by collectAndClear().
+//
+//  • _offlineMode is toggled around offline renders (true in
+//    -stopForOfflineRender, false in -resumeAfterOfflineRender before the engine
+//    restarts) and read memory_order_relaxed on the audio thread — one cheap
+//    branch per event.
 //
 //  • eventsAvailable() is a no-op — we call drain() explicitly after each
-//    process() call so the architecture doc's "drain after every process block"
-//    contract is honoured for both real-time and offline loops.
+//    process() so the "drain after every process block" contract holds for both
+//    loops. drain() is a thin public wrapper around EventHandler::drainEvents().
 //
-//  • handleMidiEvent() is called from drain(), which runs on whatever thread
-//    calls drain() (the audio render thread during real-time playback, or the
-//    offline-render thread). collectAndClear() is called from the Swift/main
-//    thread. The mutex guards the shared _events vector against this race.
-//    Contention is negligible: MIDI events from a percussion detector are
-//    sparse (one per hit), so the mutex is almost never contested.
-//
-//  • drain() is a thin public wrapper around EventHandler::drainEvents()
-//    (which is protected), used by both the render block and the offline loop.
+//  • resetRealTimeRing() discards buffered real-time events; called from
+//    -beginRealTimeCapture (play start / seek) so each fresh timeline starts
+//    clean and stale pre-seek events are not re-timestamped against a new anchor.
 // ---------------------------------------------------------------------------
 class MidiEventCapture : public RNBO::EventHandler {
 public:
-    // Called from within process() on the audio thread — intentionally a no-op.
-    // We drain explicitly after process() instead.
+    // Called from within process() on the audio (or offline) thread — a no-op.
     void eventsAvailable() override {}
 
     void handleMidiEvent(const RNBO::MidiEvent& event) override {
-        std::lock_guard<std::mutex> lock(_mutex);
-        _events.push_back(event);
+        if (_offlineMode.load(std::memory_order_relaxed)) {
+            // Offline export — lossless; malloc/lock are fine off the audio thread.
+            std::lock_guard<std::mutex> lock(_mutex);
+            _events.push_back(event);
+            return;
+        }
+        // Real-time render thread — lock-free SPSC ring, drop-newest on full.
+        const size_t w    = _writeIdx.load(std::memory_order_relaxed);
+        const size_t next = (w + 1) & (kEventRingCapacity - 1);
+        if (next == _readIdx.load(std::memory_order_acquire))
+            return;                                  // ring full — drop newest
+        _ring[w] = event;
+        _writeIdx.store(next, std::memory_order_release);
     }
 
     // Public wrapper for the protected drainEvents(); call after each process().
     void drain() { drainEvents(); }
 
-    // Returns all accumulated events and clears the buffer.
+    // --- Real-time path (main-thread consumer) -----------------------------
+
+    // Drains the lock-free ring into a vector allocated on the main thread
+    // (never on the producer side). Called by -collectAndClearRealTimeMidiEvents.
+    std::vector<RNBO::MidiEvent> drainRealTimeRing() {
+        std::vector<RNBO::MidiEvent> out;
+        const size_t w = _writeIdx.load(std::memory_order_acquire);
+        size_t r = _readIdx.load(std::memory_order_relaxed);
+        while (r != w) {
+            out.push_back(_ring[r]);
+            r = (r + 1) & (kEventRingCapacity - 1);
+        }
+        _readIdx.store(w, std::memory_order_release);
+        return out;
+    }
+
+    // Discards all buffered real-time events (main thread). Consumer-side only —
+    // advances the read index to the current write index, so it is safe to call
+    // while the producer runs. Called from -beginRealTimeCapture.
+    void resetRealTimeRing() {
+        _readIdx.store(_writeIdx.load(std::memory_order_acquire),
+                       std::memory_order_release);
+    }
+
+    // --- Offline path (background-thread producer + consumer) --------------
+
+    // Toggled around offline renders (main thread). Routes handleMidiEvent to
+    // the lossless mutex+vector buffer while true.
+    void setOfflineMode(bool enabled) {
+        _offlineMode.store(enabled, std::memory_order_release);
+    }
+
+    // Returns all events accumulated in the offline buffer and clears it.
     std::vector<RNBO::MidiEvent> collectAndClear() {
         std::lock_guard<std::mutex> lock(_mutex);
         std::vector<RNBO::MidiEvent> out;
@@ -58,8 +124,18 @@ public:
     }
 
 private:
-    std::mutex _mutex;
+    // Real-time path: lock-free SPSC ring. Producer (audio thread) owns
+    // _writeIdx; consumer (main thread) owns _readIdx.
+    RNBO::MidiEvent      _ring[kEventRingCapacity];
+    std::atomic<size_t>  _writeIdx{0};
+    std::atomic<size_t>  _readIdx{0};
+
+    // Offline path: lossless mutex-guarded vector.
+    std::mutex                   _mutex;
     std::vector<RNBO::MidiEvent> _events;
+
+    // Routes handleMidiEvent: ring (false, real-time) vs vector (true, offline).
+    std::atomic<bool>    _offlineMode{false};
 };
 
 // ---------------------------------------------------------------------------
@@ -403,12 +479,18 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // training-computed values in ParameterStore.values.
     _paramCapture.setDeliveryEnabled(false);
     [_engine stop];
+    // Route MIDI capture to the lossless offline buffer for the render. The engine
+    // is now stopped, so no real-time-path (ring) writes race this flip. See Step 14.25.
+    _midiCapture.setOfflineMode(true);
 }
 
 - (void)resumeAfterOfflineRender {
     // Restore real-time block size. No reset=true — preserves current RNBO parameter
     // state; the Swift layer re-pushes UI values via pushAllValuesToEngine() after this.
     _coreObject.prepareToProcess(_engineSampleRate, kMaxFrames);
+    // Route MIDI capture back to the real-time ring BEFORE the engine restarts,
+    // so the first resumed render callback is already in real-time mode (Step 14.25).
+    _midiCapture.setOfflineMode(false);
     [_engine prepare];
     NSError *error = nil;
     if (![_engine startAndReturnError:&error])
@@ -645,6 +727,10 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     _rtAnchorPlayheadFrame.store(_playhead.load(std::memory_order_relaxed),
                                  std::memory_order_relaxed);
     _needsRtAnchor.store(true, std::memory_order_release);
+    // Discard any real-time events still buffered from the previous transport
+    // session, so a fresh timeline (play start / seek) does not re-emit stale
+    // events against the new anchor. Consumer-side; safe while the producer runs.
+    _midiCapture.resetRealTimeRing();
 }
 
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearRealTimeMidiEvents {
@@ -661,7 +747,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     double totalMs = (double)_pcmFrameCount.load(std::memory_order_relaxed)
                      / _engineSampleRate * 1000.0;
 
-    std::vector<RNBO::MidiEvent> events = _midiCapture.collectAndClear();
+    std::vector<RNBO::MidiEvent> events = _midiCapture.drainRealTimeRing();
     NSMutableArray *result = [NSMutableArray arrayWithCapacity:events.size()];
     for (const RNBO::MidiEvent &ev : events) {
         NSData *bytes = [NSData dataWithBytes:ev.getData() length:(NSUInteger)ev.getLength()];
@@ -711,7 +797,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     int64_t  total     = _pcmFrameCount.load(std::memory_order_acquire);
 
     _coreObject.prepareToProcess(_engineSampleRate, kOfflineBlockSize, true);
-    _midiCapture.collectAndClear(); // discard any real-time-phase events
+    _midiCapture.collectAndClear(); // clear offline buffer (defensive; empty in normal flow)
 
     std::vector<RNBO::SampleValue> inL(kOfflineBlockSize, 0.0);
     std::vector<RNBO::SampleValue> inR(kOfflineBlockSize, 0.0);

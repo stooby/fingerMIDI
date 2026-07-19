@@ -1024,6 +1024,333 @@ Before the first offline analysis, `lastAnalyzedOnsetParams` is `nil`, so `onset
 
 ---
 
+### Step 14.25 - Make MIDI Note Overlay RT Safe (IMPLEMENTED)
+
+Hardens the Step-14 MIDI capture against real-time audio-thread violations, and establishes the lock-free
+buffering pattern reused by Step 14.5's spectral capture. Verified against the live code (not just this doc);
+the four refinements below (API split, ring reset, mode-flip ordering, retained offline mutex) came out of
+that review.
+
+#### Motivation — two RT violations in the render block
+
+`MidiEventCapture` (Step 14) buffers outgoing `RNBO::MidiEvent`s in a `std::mutex`-guarded `std::vector`,
+pushed from `handleMidiEvent` and swapped out by `collectAndClear()` on the main thread. `handleMidiEvent`
+runs on the **real-time audio render thread** — it is invoked from `_midiCapture.drain()`, called right
+after `core->process()` inside the `AVAudioSourceNode` render block. Two operations there violate real-time
+audio safety:
+
+1. **`std::vector::push_back` can `malloc`.** When the vector outgrows its capacity it reallocates on the
+   audio thread — an unbounded, lock-taking operation. Dormant today only because MIDI events are sparse; a
+   dense onset burst, or a main-thread stall that lets the vector fill between drains, can trigger it.
+2. **`std::mutex` on the audio thread** risks priority inversion: if the main thread is preempted mid-
+   `collectAndClear`, the render block blocks on the lock. The critical section is a pointer swap (tiny), so
+   the window is small — but it is not lock-free.
+
+Neither is currently audible, but both are latent glitch sources that worsen as event density rises. This
+step replaces the *real-time* transport with a **lock-free single-producer/single-consumer (SPSC) ring
+buffer** (the JUCE `AbstractFifo` pattern) so the render block never allocates and never locks.
+`RNBO::MidiEvent` is default-constructible and trivially copyable (plain value type — `RNBO_MidiEvent.h`),
+so a preallocated fixed-size array of slots is valid.
+
+#### The offline-lossless constraint
+
+`MidiEventCapture` feeds two consumers with opposite needs:
+
+| Consumer | Thread | RT-safe required? | Lossless required? |
+|---|---|---|---|
+| Real-time overlay (`collectAndClearRealTimeMidiEvents`) | render block → main | **yes** | no — best-effort live preview |
+| Offline MIDI export (`collectAndClearMidiEvents`) | offline loop (background) | no — no audio device | **yes — every event must survive** |
+
+A fixed ring that drops on overflow is perfect for the preview but wrong for the export. The two paths are
+**temporally exclusive** — `analyzeMIDI`/`exportMIDIOffline` call `-stopForOfflineRender` (which stops the
+engine, halting the render block) on the main thread, dispatch `renderOfflineMIDI` + `collectAndClearMidiEvents`
+to a background queue, then `-resumeAfterOfflineRender` on main. The render block is never running during the
+offline loop, so a single mode flag routes `handleMidiEvent` to the correct buffer:
+
+- **Real-time mode (default):** `handleMidiEvent` writes to the **lock-free SPSC ring** (drop-newest when
+  full). The render block is allocation- and lock-free. Overflow is acceptable — the real-time overlay is a
+  best-effort preview, and the *authoritative* MIDI is produced by the offline export.
+- **Offline mode:** `handleMidiEvent` writes to the **existing `std::mutex`-guarded `std::vector`,
+  unchanged**, collected once at loop end. `malloc` and the mutex are fine here — the offline loop runs on a
+  background thread with no real-time deadline, where the producer (`drain()`) and consumer
+  (`collectAndClearMidiEvents`) are the *same* thread, so the mutex is uncontended. **The proven Step-14
+  offline collection path is untouched** (refinement D).
+
+`setOfflineMode(bool)` (a `std::atomic<bool>`) is toggled alongside the existing `_paramCapture.setDeliveryEnabled`
+brackets: **`true` in `-stopForOfflineRender`, `false` in `-resumeAfterOfflineRender` before `[_engine start]`**
+(refinement C) so the resumed render block is already in real-time mode on its first callback — otherwise a
+few stray RT events could dribble into the offline vector. On the audio thread the flag is read
+`memory_order_relaxed` — one cheap branch per event.
+
+#### Ring buffer design
+
+- Fixed capacity `kEventRingCapacity = 2048`, a **power of two** so index wrap is a bitmask
+  (`i & (kEventRingCapacity - 1)`), not a modulo. Backed by a preallocated `RNBO::MidiEvent[kEventRingCapacity]`.
+- `std::atomic<size_t> _writeIdx, _readIdx`. Strict SPSC: the **producer** (audio thread) owns `_writeIdx`,
+  the **consumer** (main thread) owns `_readIdx` — neither index is written by both threads.
+  - **Produce** (`handleMidiEvent`, real-time mode): `next = (_writeIdx + 1) & mask`; if
+    `next == _readIdx.load(acquire)` the ring is full → **drop the incoming event** (drop-newest keeps the
+    producer from ever touching `_readIdx`, preserving strict SPSC); else store the event at `_writeIdx`,
+    then `_writeIdx.store(next, release)`.
+  - **Consume** (`drainRealTimeRing()`, main thread): snapshot `w = _writeIdx.load(acquire)`, copy
+    `[_readIdx, w)` (with wrap) into the returned `std::vector`, then `_readIdx.store(w, release)`. The
+    returned vector's allocation happens on the main thread — never on the producer side.
+- **Capacity rationale:** the onset detector's `Min Gap` parameter bounds the onset rate at the source
+  (default 20 ms → ≤ 50 onsets/s → ≤ 100 MIDI ev/s; a 5 ms floor → ≤ 200 onsets/s → ≤ 400 ev/s). The
+  consumer drains at 15 fps, so normal occupancy is single digits. 2048 slots absorb **~5–20 s of complete
+  main-thread unresponsiveness** at those rates before a single event is dropped — well past the point the
+  app is effectively hung. Cost: 2048 × sizeof(`RNBO::MidiEvent`) ≈ a few tens of KB. Dropping only ever
+  affects the live preview, never the export.
+- **Note-pairing under overflow:** a drop can orphan a note-on/note-off pair in the preview, but only during
+  extreme overflow (a multi-second stall); the overlay's re-detection/replacement and `flushOpenRealTimeNotes`
+  self-heal it on the next loop. Acceptable for a best-effort preview.
+
+#### API split + ring lifecycle (refinements A & B)
+
+Today one C++ `collectAndClear()` serves four call sites. Split it in two:
+
+- **`drainRealTimeRing()`** — drains the ring; called only by `-collectAndClearRealTimeMidiEvents` (the RT
+  overlay poll, main thread). The anchor-based timestamp math in that ObjC method is unchanged; only its
+  source (ring vs. vector) changes.
+- **`collectAndClear()`** (vector, retained as-is) — called by `-collectAndClearMidiEvents` (offline export)
+  and the two internal offline discards (pre-`prepareToProcess` cleanup and pre-warm discard). All three are
+  offline-mode, so they correctly target the vector.
+
+- **Ring reset in `-beginRealTimeCapture`.** Because RT and offline now use *separate* buffers, the offline
+  loop's "discard any real-time-phase events" step no longer clears leftovers sitting in the **ring**.
+  `-beginRealTimeCapture` is the fresh-timeline hook — called on play-start **and** on seek, already paired
+  with `openRealTimeNoteOns.removeAll()` — so reset the ring there (`_readIdx = _writeIdx.load(acquire)`, a
+  consumer-side op, safe). This preserves the old discard intent **and fixes a latent pre-existing issue**:
+  today, ≤ one poll-interval of events left over before a stop/seek are returned by the next poll and
+  re-timestamped against the *new* anchor, misplacing notes near the seek point. The reset discards them
+  cleanly. (Optional, out of scope: a final `drainRealTimeRing()` on stop would also capture the last
+  ≤ 66 ms of events, which are currently dropped — the ring makes this a trivial add if wanted later.)
+
+`WaveformView` is unaffected — it renders the SwiftUI `midiNoteOverlay` array and never touches the capture.
+
+#### Reuse the ring *design* in `MessageEventCapture` (Step 14.5) — a separate instance
+
+Step 14.5's spectral capture reuses this **ring design**, but as its **own dedicated ring instance** — not
+the MIDI ring. `MidiEventCapture` owns `MidiEvent _ring[kEventRingCapacity]`; `MessageEventCapture` owns a
+separate `SpectralMsg _ring[kEventRingCapacity]` holding its own POD slots. They share only the SPSC pattern,
+the drop-newest policy, and the `kEventRingCapacity` constant. The spectral capture has **no** lossless
+offline consumer — offline delivery is gated off entirely via `_deliveryEnabled` — so it uses only the ring
+half: written drop-newest by `handleMessageEvent` (real-time) and drained by `collectAndClearSpectralEvents`
+(main thread). No mode flag, no fallback vector, no `-beginRealTimeCapture` reset needed (the store clears its
+sample arrays on import instead). `SpectralMsg` is 16 bytes, so its ring is ~32 KB. Step 14.5's "mutex-guarded
+`std::vector`" wording is superseded by this ring pattern.
+
+#### Verification
+
+1. Play a dense percussion file → the real-time overlay still populates and loops correctly (no regression
+   from Step 14).
+2. Reason through / instrument the render block → no `malloc` and no lock on the audio path during playback.
+3. Export MIDI on a long, dense file → exported event count matches offline analysis exactly (lossless; the
+   ring is not involved in offline mode).
+4. Play, stop mid-file, seek elsewhere, resume → no stray/misplaced notes appear near the old stop/seek point
+   (ring-reset in `-beginRealTimeCapture`).
+5. Induce a main-thread stall during playback (e.g. a long synchronous op) → the overlay drops the newest
+   events gracefully; **audio stays clean** (no dropout from the render block).
+
+---
+
+### Step 14.5 - SpecFlatCutoff and SpecCentCutoff HorizontalSliderView Controls
+
+Replaces the generic rotary knobs for `SpecCentCutoff` and `SpecFlatCutoff` with two purpose-built
+horizontal sliders, each backed by a live, fading **histogram** of the spectral values the RNBO patch
+measures per detected onset. The RNBO patch emits per-onset **SpectralCentroid** and **SpectralFlatness**
+values through outport message objects; until now the host listened to none of them (no
+`handleMessageEvent` existed anywhere in the bridge). Surfacing them on the same axis as the cutoff lets
+the user place each cutoff exactly where kick vs. snare values cluster.
+
+New views live in their own `HorizontalSliderView.swift`, inserted into `ContentView` between
+`transportControls` and `parametersPanel` (the same inclusion pattern as `WaveformView`).
+
+#### Visual design
+
+Two rows inside a single subtle light-grey rounded border, split by a light-grey divider:
+
+- **Top row = SpectralCentroid** — bright-green histogram bars, axis `0 – 8000` (default).
+- **Bottom row = SpectralFlatness** — purple histogram bars, axis `0 – 0.55` (default).
+
+Per row, left-to-right: a **bordered number box** (editable cutoff value — centroid integer, flatness
+2-decimal), a grey **spectral min icon**, the **canvas** (bars + cutoff bar + drum markers + axis label),
+and a grey **spectral max icon**. Number boxes and spectral icons sit *outside* the border, column-aligned.
+
+Inside each canvas:
+- Each measured value is a thin (~2 pt) **full-height vertical bar** at its value's x-position, colored by
+  feature (green / purple), with opacity encoding recency (see *Opacity / fade model*).
+- The **cutoff** is a full-height, slightly thicker, full-opacity **yellow** vertical bar (distinct from
+  the Kick orange).
+- **Kick** (orange, `C1`) and **Snare** (cyan, `D1`) drum icons + note labels flank the yellow cutoff bar
+  — Kick+`C1` just left, Snare+`D1` just right — and **move with the cutoff**, encoding "values below the
+  cutoff trigger the Kick, values above trigger the Snare." The drum colors are the exact `WaveformView`
+  MIDI note-block colors (Kick orange `(1.0, 0.45, 0.1)`, Snare cyan `(0.2, 0.85, 0.9)`), so the sliders
+  and the waveform overlay share one colour language.
+- The current **`axisMax`** is drawn as a small label in the canvas's upper-right corner.
+
+Spectral min/max icons are self-contained grey vector `Shape`/`Path` glyphs: centroid = rounded energy
+bumps (low/high); flatness = a tonal peak with a dotted tail (min) and a comb of equal vertical lines
+(max, noise-like).
+
+#### Configuration constants
+
+Grouped in a `SpectralDisplayConfig` struct:
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `numberSpecDisplayValues` (N) | 20 | count of recent values shown at the rank-based ("full") opacity ramp |
+| `specDisplayFadeout` (T) | 1.2 | **seconds** to fade a value from min-opacity → 0 after it ages past N |
+| `specDisplayMaxOpacity` | 1.0 | native SwiftUI opacity of the most recent value |
+| `specDisplayMinOpacity` | 0.35 | native opacity of the oldest of the N displayed (rank N−1) |
+| `maxAxisDisplayValuePercentageOffset` | 3 | % of a feature's *full* range added as headroom when the axis auto-expands |
+
+Per-feature: default axis max (centroid 8000, flatness 0.55), full possible range (centroid 10000,
+flatness 1.0), bar color, value format, and its min/max icon views.
+
+#### Dynamic display axis (high-water mark)
+
+`axisMax` starts at the default and is a monotonic high-water mark: when a value `v > axisMax` is
+received, it expands to `v + offset`, where `offset = maxAxisDisplayValuePercentageOffset% × fullRange`
+(centroid 300, flatness 0.03). It never shrinks within a session, also encompasses the current cutoff
+value so dragging the cutoff high never clips its bar, and resets to the default on new-file import (when
+the histogram clears). The label in the upper-right corner always shows the current extent.
+
+Existing bars reposition **for free** when `axisMax` grows: samples store only their raw `value`; the
+on-screen x is derived each frame from the *current* `axisMax`, so the next redraw places every bar at its
+correct compressed position with no cached state to invalidate. Because `axisMax` and `width` are constant
+for all bars in a row within a frame, the draw hoists the reciprocal — `let scale = width / axisMax` once
+per row per frame — and every x is then a plain multiply `value * scale`.
+
+#### Opacity / fade model
+
+Samples live in a **FIFO** buffer (newest pushed on, oldest pruned off), in two phases:
+
+**Phase 1 — rank-based ramp (the N newest).** For a sample at recency rank `r` (0 = newest), with
+`step = (maxOp − minOp) / (N − 1)`: `opacity = maxOp − r·step`. So r = 0 → `maxOp` (1.0) and r = N−1 (the
+oldest of the N displayed) → exactly `minOp` (0.35). The `N − 1` denominator is deliberate: N values
+ramping inclusively from max to min have N−1 intervals between them, so the oldest displayed lands exactly
+on `minOp` (a plain `/N` would leave it one step high).
+
+**Phase 2 — time-based fade-out (older than the N newest).** The instant a sample's rank first reaches N,
+it "ages out" and is stamped once with `agedOutAt = now`. From then on its opacity ignores rank and
+depends only on elapsed time: `opacity = minOp · (1 − (now − agedOutAt) / T)`, clamped ≥ 0; when
+`now − agedOutAt ≥ T` it is fully faded and pruned. The handoff is continuous — Phase 1 already equals
+`minOp` at r = N−1, and Phase 2 starts from `minOp` at elapsed 0 — so bars fade smoothly to invisible
+rather than blinking out.
+
+Only `agedOutAt` is stored (nil until a sample ages out); no arrival timestamp is kept. `now` and
+`agedOutAt` are **seconds** (`Date().timeIntervalSinceReferenceDate` / the `TimelineView` context date),
+the same unit as `T`, so no conversion is needed. Both phases yield native SwiftUI opacity (0–1) directly.
+
+#### AudioEngine additions — outport message listener (pull model)
+
+Mirrors the **MIDI-capture pull model** (`MidiEventCapture` + `collectAndClearRealTimeMidiEvents`) — **not**
+the parameter-listener's `dispatch_async` push. This choice is load-bearing for real-time safety: spectral
+messages fire **twice per detected onset** (Centroid + Flatness) throughout live playback and cluster at
+transients — exactly when the render block is busiest — so the audio thread must never `malloc`, lock on a
+non-RT thread, or touch ARC/Objective-C for them. The parameter listener's `dispatch_async(main)` per event
+is only safe *there* because watched parameter writes are near-zero-frequency during playback (self-writes
+are source-id-filtered and only two params are watched); copying that mechanism to a per-onset stream would
+put a heap `Block_copy` (a `malloc`) plus a libdispatch lock on the audio thread at every onset. The pull
+model does the audio-thread work with a single buffered push and moves all boxing/allocation to the main
+thread. A third `EventHandler` interface is still added (one subclass per event type):
+
+- New file-scope class `MessageEventCapture : RNBO::EventHandler` in `AudioEngine.mm`, overriding
+  `handleMessageEvent`. It drops events when `!_deliveryEnabled`, keeps only `Number`-type messages, and
+  matches `event.getTag()` against `RNBO::TAG("SpectralCentroid")` / `RNBO::TAG("SpectralFlatness")`. A
+  surviving event is reduced **on the audio thread** to a POD `struct SpectralMsg { int feature; double
+  value; }` — `feature` a plain `int`/enum discriminator (0 = centroid, 1 = flatness), **never an
+  `NSString`** — and written into `MessageEventCapture`'s **own dedicated** lock-free SPSC ring buffer,
+  `SpectralMsg _ring[kEventRingCapacity]`. This is a **separate ring instance** from the
+  `MidiEvent _ring[kEventRingCapacity]` in `MidiEventCapture` (Step 14.25) — same design, drop-newest
+  policy, and `kEventRingCapacity` constant, but a distinct buffer holding `SpectralMsg` slots. Drop-newest
+  when full; strict single-producer/single-consumer, no `malloc`, no lock. **No `dispatch_async`, no ObjC
+  object, no callback block touches the audio thread.** `eventsAvailable()` is a no-op; `drain()` is a thin
+  `drainEvents()` wrapper, as with the sibling captures.
+- Because the spectral capture has no lossless offline consumer, it needs only the ring half of the Step
+  14.25 pattern — no offline-mode fallback vector and no `-beginRealTimeCapture` reset. Its
+  `collectAndClear()` drains its own `SpectralMsg _ring` (`[readIdx, writeIdx)`) into a
+  `std::vector<SpectralMsg>` on the **main thread**.
+- A third `ParameterEventInterface` (`_messageListenerInterface`, handler `_messageCapture`) is created in
+  `-init` and `.reset()` in `-dealloc` before the handler is destroyed. `_messageCapture.drain()` is
+  called after every `core->process()` — real-time render block and offline loops — alongside the existing
+  `_midiCapture` / `_paramCapture` drains.
+- **Live-playback only:** `_messageCapture`'s `_deliveryEnabled` is bracketed false/true around offline
+  renders (in `-stopForOfflineRender` / `-resumeAfterOfflineRender`), so `Analyze Onsets` / `Export MIDI`
+  do not populate the histogram. In addition, `_messageCapture.collectAndClear()` is called once to discard
+  buffered samples at offline-loop **entry and exit** — mirroring the `_midiCapture.collectAndClear()`
+  discards that already bracket the offline loop — so no real-time-phase spectral samples bleed across the
+  render boundary.
+- `AudioEngine.h` exposes a **receive-only pull method** `collectAndClearSpectralEvents()` (mirrors
+  `collectAndClearRealTimeMidiEvents`), returning the batch accumulated since the last call as
+  `NSArray<NSDictionary *>` with keys `"feature"` (`NSNumber` int) and `"value"` (`NSNumber` double). The
+  `NSDictionary` boxing happens on the main thread inside `collectAndClear`, not on the audio thread. No
+  callback block property is added, and nothing is written back to RNBO.
+
+#### ParameterStore additions
+
+- `struct SpectralSample { let value: Float; var agedOutAt: TimeInterval? = nil }`.
+- `centroidSamples` / `flatnessSamples` (FIFO, newest-first) and `centroidAxisMax` / `flatnessAxisMax`
+  (seeded to the defaults) on the `@Observable` store.
+- `recordSpectral(feature:value:)` (main thread): push the new sample; stamp the sample that just crossed
+  to rank N with `agedOutAt = now`; expand `axisMax` if exceeded; prune samples past their fade window.
+- `pollSpectralEvents()` (main thread): calls `engine.collectAndClearSpectralEvents()` and loops the batch
+  into `recordSpectral(feature:value:)`. This is the **pull** counterpart to `pollRealTimeMidiEvents()` —
+  there is no engine callback; samples are drained on `ContentView`'s existing playback-gated timer (see
+  *ContentView changes*). Sample arrays + axis maxes are cleared/reset wherever the file/overlay resets on
+  import.
+
+#### HorizontalSliderView.swift — new views
+
+New file, auto-included by the Xcode file-system-synchronized root group (no `project.pbxproj` edits):
+
+- `HorizontalSliderView` — one row's `Canvas` (bars, yellow cutoff bar, `axisMax` label) plus a `ZStack`
+  overlay for the Kick/Snare drum markers positioned at `cutoffX`. Its drag gesture maps pointer-x →
+  value across `[0, axisMax]`, clamped to the parameter's range, with shift = ×10 fine control and
+  double-click reset — reusing `RotarySlider`'s gesture/clamp logic and `WaveformView`'s seek-x mapping.
+- `SpectralCentroidIcon` / `SpectralFlatnessIcon` (grey), and `Kick` / `Snare` drum-marker views.
+- `InputValueField` (reused, given a bordered style) for the number boxes.
+- `SpectralSlidersView` — the container `ContentView` inserts. Looks up both params by `rnboId` (renders
+  nothing if either is missing), assembles the column-aligned two-row layout with the grey border/divider,
+  and wraps everything in its **own dedicated** `TimelineView(.periodic, 30 fps)` **solely to drive the fade
+  redraw** — so aged-out bars keep fading to invisible even when playback is stopped (the waveform's
+  TimelineView is fixed in the waveform slot and can't be reused without restructuring the layout, and the
+  playback-gated pull timer wouldn't tick while stopped). The `TimelineView` closure only reads state and
+  draws; it performs **no** engine pull — side-effecting drains don't belong in a `ViewBuilder` SwiftUI may
+  re-evaluate off-cadence. The spectral-event pull lives in `ContentView`'s playback-gated timer instead
+  (see below).
+
+#### ContentView changes
+
+- Insert `SpectralSlidersView(store: store)` between `transportControls.padding()` and the
+  `parametersPanel` block.
+- **Pull spectral events on the existing playback-gated 15 fps timer.** The `.onReceive(Timer.publish…)`
+  that already calls `pollRealTimeMidiEvents()` under `guard isPlaying` also calls `store.pollSpectralEvents()`.
+  New samples only arrive during playback, so gating the pull to playback is correct; the *fade* of
+  already-recorded samples is driven separately by `SpectralSlidersView`'s always-on 30 fps `TimelineView`.
+  This keeps the audio→UI handoff a main-thread pull — identical to the real-time MIDI overlay, no callback
+  from the audio thread.
+- Give the `SpecCentCutoff` / `SpecFlatCutoff` specs a new `ControlType` (`.spectralSlider`) so they drop
+  out of the rotary `LazyVGrid` (built from `indexedParams(ofType: .rotary)`) — the sliders replace the
+  knobs entirely, while the store still tracks their values and engine-feedback exactly as before.
+
+#### Verification
+
+1. Import audio with clear kicks + snares; press **Play**. Two sliders appear between transport and
+   parameters (Centroid top, Flatness bottom); yellow cutoff bars; green/purple bars stream in at their
+   value positions; newest brightest, older bars fade and vanish smoothly ~1.2 s after aging past 20
+   values. Kick/Snare markers flank each cutoff; `axisMax` shows upper-right.
+2. Feed a value beyond the default axis → the axis expands with 3% headroom and existing bars/handle
+   reposition without clipping.
+3. Drag a slider / edit its number box → cutoff updates both ways; shift-drag = fine; double-click =
+   reset. `SpecCentCutoff` / `SpecFlatCutoff` no longer appear as rotary knobs.
+4. Run **Analyze Onsets** / **Export MIDI** → histogram does not populate from the offline pass, and
+   trained cutoff values still mirror into the sliders.
+5. Import a second file → histogram clears and axis maxes reset to defaults.
+
+---
+
 ### Step 15 - Real-time Oscilloscope UI Overlay
 
 A real-time oscilloscope layer drawn on top of the waveform view during playback. Post-RNBO output audio is written into a lock-free ring buffer each render callback; the SwiftUI `Canvas` reads a snapshot at 30 fps and draws it as a smooth curve. Multiple consecutive snapshots are retained and drawn with decreasing opacity to produce the SAMPLR-style "persistence" effect — older frames ghost behind the live trace.
