@@ -587,6 +587,18 @@ struct ContentView: View {
             // Clear the spectral histograms and reset their display axes for the new file.
             store.clearSpectral()
         }
+        #if os(macOS)
+        .onAppear {
+            // No UI element should be auto-focused on launch. macOS makes the first text
+            // field (the SpecCentCutoff number box) the window's initial first responder,
+            // which selects/highlights its text and swallows linked-value updates. Clear
+            // the first responder once the window is up so nothing starts focused.
+            DispatchQueue.main.async {
+                let window = NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow
+                window?.makeFirstResponder(nil)
+            }
+        }
+        #endif
     }
 
     // MARK: Transport
