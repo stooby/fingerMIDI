@@ -100,9 +100,28 @@ struct RotarySlider: View {
 
 // MARK: - ParameterStore
 
+// MARK: - Spectral histogram model
+
+/// Which spectral feature a captured value / histogram belongs to. Raw values match
+/// the ObjC bridge's `SpectralFeature` (returned by `collectAndClearSpectralEvents`).
+enum SpectralFeature: Int {
+    case centroid = 0   // top row, green
+    case flatness = 1   // bottom row, purple
+}
+
+/// One measured spectral value in a feature's rolling display buffer (newest-first).
+/// `agedOutAt` (seconds, `timeIntervalSinceReferenceDate`) is nil while the sample is
+/// within the N-newest rank-based opacity ramp; it is stamped once when the sample
+/// first ages out (crosses to rank N), after which its opacity fades to 0 over
+/// `SpectralDisplayConfig.specDisplayFadeout` seconds. No arrival timestamp is kept.
+struct SpectralSample {
+    let value: Float
+    var agedOutAt: TimeInterval? = nil
+}
+
 @Observable
 final class ParameterStore {
-    enum ControlType { case toggle, rotary, discrete, numberInput }
+    enum ControlType { case toggle, rotary, discrete, numberInput, spectralSlider }
 
     struct Spec {
         let label: String
@@ -129,8 +148,10 @@ final class ParameterStore {
         // Onset/odftype: reserved — dropdown (combo box) to be added in a later step.
 
         "OnsetInput":            .init(label: "Onset Input",       controlType: .rotary,   order:  8),
-        "SpecFlatCutoff":        .init(label: "Spec Flat Cutoff",  controlType: .rotary,   order:  9),
-        "SpecCentCutoff":        .init(label: "Spec Cent Cutoff",  controlType: .rotary,   order: 10),
+        // Rendered as horizontal sliders with a spectral histogram (SpectralSlidersView),
+        // not rotary knobs — .spectralSlider drops them out of the rotary grid.
+        "SpecFlatCutoff":        .init(label: "Spec Flat Cutoff",  controlType: .spectralSlider, order:  9),
+        "SpecCentCutoff":        .init(label: "Spec Cent Cutoff",  controlType: .spectralSlider, order: 10),
         "Input_dB":              .init(label: "Input dB",          controlType: .rotary,   order: 11),
         "InputDelaySend_dB":     .init(label: "Input→Delay dB",   controlType: .rotary,   order: 12),
         "DrumSynthOutput_dB":    .init(label: "Drum Synth Out",    controlType: .rotary,   order: 13),
@@ -217,6 +238,73 @@ final class ParameterStore {
     func pushAllValuesToEngine() {
         for (i, param) in params.enumerated() {
             engine.setParameter(index: param.rnboIndex, value: values[i])
+        }
+    }
+
+    // MARK: Spectral histogram
+
+    // Rolling display buffers (newest-first FIFOs) of recently-measured spectral values,
+    // and their dynamic display-axis maxima (high-water marks). Populated by
+    // pollSpectralEvents() during live playback; drive the HorizontalSliderView histograms.
+    var centroidSamples: [SpectralSample] = []
+    var flatnessSamples: [SpectralSample] = []
+    var centroidAxisMax: Float = SpectralDisplayConfig.centroid.defaultAxisMax
+    var flatnessAxisMax: Float = SpectralDisplayConfig.flatness.defaultAxisMax
+
+    // Drains spectral outport messages captured during playback and folds them into the
+    // display buffers. The PULL counterpart to ContentView.pollRealTimeMidiEvents(); run
+    // on the same playback-gated 15 fps timer (new samples only arrive during playback).
+    func pollSpectralEvents() {
+        let events = engine.collectAndClearSpectralEvents() ?? []
+        for dict in events {
+            guard
+                let f = dict["feature"] as? Int,
+                let feature = SpectralFeature(rawValue: f),
+                let v = dict["value"] as? Double
+            else { continue }
+            recordSpectral(feature: feature, value: Float(v))
+        }
+    }
+
+    // Records one measured value: pushes it newest-first, stamps the sample that just aged
+    // out of the rank ramp, expands the display axis if the value exceeds it, and prunes
+    // fully-faded samples. Main thread only.
+    func recordSpectral(feature: SpectralFeature, value: Float) {
+        let now = Date().timeIntervalSinceReferenceDate
+        let cfg = SpectralDisplayConfig.feature(feature)
+        switch feature {
+        case .centroid:
+            centroidSamples.insert(SpectralSample(value: value), at: 0)
+            Self.stampAndPrune(&centroidSamples, now: now)
+            if value > centroidAxisMax { centroidAxisMax = value + cfg.expansionOffset }
+        case .flatness:
+            flatnessSamples.insert(SpectralSample(value: value), at: 0)
+            Self.stampAndPrune(&flatnessSamples, now: now)
+            if value > flatnessAxisMax { flatnessAxisMax = value + cfg.expansionOffset }
+        }
+    }
+
+    // Clears both histograms and resets the display axes to their defaults. Called on new
+    // file import (alongside the MIDI overlay reset).
+    func clearSpectral() {
+        centroidSamples.removeAll()
+        flatnessSamples.removeAll()
+        centroidAxisMax = SpectralDisplayConfig.centroid.defaultAxisMax
+        flatnessAxisMax = SpectralDisplayConfig.flatness.defaultAxisMax
+    }
+
+    // A newly-inserted sample bumps every existing sample's rank by one; the sample now at
+    // index N (newest-first) just crossed out of the rank ramp, so stamp its aged-out time
+    // once. Then drop any sample whose fade has fully elapsed.
+    private static func stampAndPrune(_ samples: inout [SpectralSample], now: TimeInterval) {
+        let n = SpectralDisplayConfig.numberSpecDisplayValues
+        if samples.count > n, samples[n].agedOutAt == nil {
+            samples[n].agedOutAt = now
+        }
+        let fade = SpectralDisplayConfig.specDisplayFadeout
+        samples.removeAll { sample in
+            guard let t = sample.agedOutAt else { return false }
+            return now - t >= fade
         }
     }
 }
@@ -447,6 +535,10 @@ struct ContentView: View {
 
             transportControls.padding()
 
+            // SpecCentCutoff / SpecFlatCutoff horizontal sliders with live spectral
+            // histograms. Renders only when both cutoff params exist in the patch.
+            SpectralSlidersView(store: store)
+
             if !store.params.isEmpty {
                 Divider()
                 parametersPanel
@@ -456,6 +548,10 @@ struct ContentView: View {
             guard isPlaying else { return }
             realTimeCoverageMs += 1000.0 / 15.0
             pollRealTimeMidiEvents()
+            // Drain spectral outport messages into the histogram buffers. Pull (not push)
+            // and playback-gated, next to the MIDI pull. The spectral fade redraw runs
+            // separately on SpectralSlidersView's always-on TimelineView.
+            store.pollSpectralEvents()
         }
         .onChange(of: overlayParamsDirty) { _, isDirty in
             if isDirty && !midiNoteOverlay.isEmpty {
@@ -488,6 +584,8 @@ struct ContentView: View {
             lastOverlayOnsetParams = nil
             openRealTimeNoteOns.removeAll()
             realTimeCoverageMs = 0
+            // Clear the spectral histograms and reset their display axes for the new file.
+            store.clearSpectral()
         }
     }
 

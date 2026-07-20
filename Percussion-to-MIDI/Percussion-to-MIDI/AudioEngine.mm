@@ -43,6 +43,21 @@ struct RtMidiEvent {
     uint8_t len;
 };
 
+// Feature discriminator for a captured spectral outport message. Plain int so the
+// audio thread never touches an NSString/ObjC object. Kept in sync with the Swift
+// side (ParameterStore.SpectralFeature): 0 = SpectralCentroid, 1 = SpectralFlatness.
+enum SpectralFeature : int {
+    SpectralFeatureCentroid = 0,
+    SpectralFeatureFlatness = 1,
+};
+
+// A spectral outport message reduced to plain-old-data on the audio thread — the
+// only thing written into MessageEventCapture's lock-free ring. No ObjC, no ARC.
+struct SpectralMsg {
+    int    feature;   // SpectralFeature
+    double value;
+};
+
 // ---------------------------------------------------------------------------
 // MIDI event accumulator (real-time safe)
 //
@@ -291,6 +306,99 @@ private:
     std::atomic<bool>              _deliveryEnabled{true};
 };
 
+// ---------------------------------------------------------------------------
+// Spectral message listener (real-time safe, pull model)
+//
+// Subclasses RNBO::EventHandler to capture the patch's per-onset SpectralCentroid
+// and SpectralFlatness outport messages and hand them to the UI histogram. Like
+// MidiEventCapture, handleMessageEvent() runs on the audio render thread (drained
+// right after process()), so it must not allocate, lock, or touch ARC. It therefore
+// follows the MIDI capture's PULL model — NOT ParameterEventCapture's dispatch_async
+// push. Spectral messages fire twice per detected onset (Centroid + Flatness),
+// continuously during live playback and clustered at transients (when the render
+// block is busiest); a Block_copy(malloc)+libdispatch lock per onset there would risk
+// audible dropouts. Instead the audio thread reduces each survivor to a POD
+// SpectralMsg and writes it into a lock-free single-producer/single-consumer ring;
+// the main thread pulls the batch on a timer via -collectAndClearSpectralEvents.
+//
+//  • Same ring design as MidiEventCapture's real-time path (shared kEventRingCapacity
+//    constant, drop-newest on overflow) but a SEPARATE buffer of SpectralMsg slots.
+//    The histogram is a best-effort live display, so drop-newest loss is harmless.
+//
+//  • No offline buffer and no per-block timestamp/settling machinery — spectral has
+//    no lossless offline consumer, and the values carry no timeline.
+//
+//  • _deliveryEnabled is toggled false around offline renders so Analyze Onsets /
+//    Export MIDI don't populate the live histogram; resetRing() discards buffered
+//    real-time samples at the offline boundary so none bleed across.
+//
+//  • eventsAvailable() is a no-op; drain() is called explicitly after each process().
+// ---------------------------------------------------------------------------
+class MessageEventCapture : public RNBO::EventHandler {
+public:
+    void eventsAvailable() override {}
+
+    void handleMessageEvent(const RNBO::MessageEvent& event) override {
+        if (!_deliveryEnabled.load(std::memory_order_acquire)) return;
+        if (event.getType() != RNBO::MessageEvent::Number) return;
+
+        int feature = SpectralFeatureCentroid;
+        const RNBO::MessageTag tag = event.getTag();
+        if      (tag == RNBO::TAG("SpectralCentroid")) feature = SpectralFeatureCentroid;
+        else if (tag == RNBO::TAG("SpectralFlatness")) feature = SpectralFeatureFlatness;
+        else return;
+
+        // Real-time render thread — lock-free SPSC ring, drop-newest on full.
+        const size_t w    = _writeIdx.load(std::memory_order_relaxed);
+        const size_t next = (w + 1) & (kEventRingCapacity - 1);
+        if (next == _readIdx.load(std::memory_order_acquire))
+            return;                                  // ring full — drop newest
+
+        SpectralMsg &slot = _ring[w];
+        slot.feature = feature;
+        slot.value   = (double)event.getNumValue();
+        _writeIdx.store(next, std::memory_order_release);
+    }
+
+    // Public wrapper for the protected drainEvents(); call after each process().
+    void drain() { drainEvents(); }
+
+    // Drains the lock-free ring into a vector allocated on the main thread (never on
+    // the producer side). Called by -collectAndClearSpectralEvents.
+    std::vector<SpectralMsg> drainRing() {
+        std::vector<SpectralMsg> out;
+        const size_t w = _writeIdx.load(std::memory_order_acquire);
+        size_t r = _readIdx.load(std::memory_order_relaxed);
+        while (r != w) {
+            out.push_back(_ring[r]);
+            r = (r + 1) & (kEventRingCapacity - 1);
+        }
+        _readIdx.store(w, std::memory_order_release);
+        return out;
+    }
+
+    // Discards all buffered samples (main thread). Consumer-side only — advances the
+    // read index to the current write index, safe while the producer runs. Called at
+    // the offline-render boundary so no real-time-phase samples bleed across it.
+    void resetRing() {
+        _readIdx.store(_writeIdx.load(std::memory_order_acquire),
+                       std::memory_order_release);
+    }
+
+    // Toggled around offline renders (main thread) so offline spectral messages don't
+    // reach the ring and populate the live histogram.
+    void setDeliveryEnabled(bool enabled) {
+        _deliveryEnabled.store(enabled, std::memory_order_release);
+    }
+
+private:
+    // Producer (audio thread) owns _writeIdx; consumer (main thread) owns _readIdx.
+    SpectralMsg          _ring[kEventRingCapacity]{};
+    std::atomic<size_t>  _writeIdx{0};
+    std::atomic<size_t>  _readIdx{0};
+    std::atomic<bool>    _deliveryEnabled{true};
+};
+
 // Safe upper bound for any macOS hardware buffer size; passed to
 // prepareToProcess() so RNBO pre-allocates its internal working memory.
 static const AVAudioFrameCount kMaxFrames = 4096;
@@ -334,6 +442,13 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     ParameterEventCapture                  _paramCapture;
     RNBO::ParameterEventInterfaceUniquePtr _paramListenerInterface;
 
+    // Spectral message listener. Captures the patch's per-onset SpectralCentroid /
+    // SpectralFlatness outport messages into a lock-free ring, pulled by the Swift
+    // layer for the histogram display. _messageCapture must outlive
+    // _messageListenerInterface (the interface holds a raw pointer); see -dealloc.
+    MessageEventCapture                    _messageCapture;
+    RNBO::ParameterEventInterfaceUniquePtr _messageListenerInterface;
+
     // Absolute RNBO engine time (ms) at the start of the most recent offline
     // render main loop. RNBO's time counter is cumulative and is not reset by
     // prepareToProcess, so event timestamps must be normalised by subtracting
@@ -370,6 +485,14 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
             &_paramCapture
         );
 
+        // Wire the spectral message listener to CoreObject. A third interface /
+        // handler, drained alongside the other two after every process(). Overrides
+        // only handleMessageEvent, so it ignores MIDI and parameter events.
+        _messageListenerInterface = _coreObject.createParameterInterface(
+            RNBO::ParameterEventInterface::SingleProducer,
+            &_messageCapture
+        );
+
         // Tell _paramCapture which interface's events to treat as self-writes
         // (everything we send via _paramEventInterface->setParameterValue), and
         // which parameter indices it should care about. SpecFlatCutoff and
@@ -395,6 +518,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 - (void)dealloc {
     [_engine stop];
     // Reset interfaces before their handlers are destroyed (interfaces hold raw pointers).
+    _messageListenerInterface.reset();
     _paramListenerInterface.reset();
     _paramEventInterface.reset();
     delete[] _inL;
@@ -439,6 +563,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     RNBO::CoreObject     *core           = &_coreObject;
     MidiEventCapture     *midiCapture    = &_midiCapture;
     ParameterEventCapture *paramCapture  = &_paramCapture;
+    MessageEventCapture  *messageCapture = &_messageCapture;
     RNBO::SampleValue    *inL            = _inL;
     RNBO::SampleValue    *inR            = _inR;
     RNBO::SampleValue    *outL           = _outL;
@@ -504,6 +629,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
             core->process(inBufs, 2, outBufs, 2, frameCount);
             midiCapture->drain();
             paramCapture->drain();
+            messageCapture->drain();
 
             UInt32 chCount = outputData->mNumberBuffers;
             for (UInt32 ch = 0; ch < chCount && ch < 2; ++ch) {
@@ -543,10 +669,16 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // the main thread AFTER resumeAfterOfflineRender returns and overwrite the
     // training-computed values in ParameterStore.values.
     _paramCapture.setDeliveryEnabled(false);
+    // Suppress spectral message delivery too, so the offline pass doesn't populate
+    // the live histogram (Analyze Onsets / Export MIDI are not "playback").
+    _messageCapture.setDeliveryEnabled(false);
     [_engine stop];
     // Route MIDI capture to the lossless offline buffer for the render. The engine
     // is now stopped, so no real-time-path (ring) writes race this flip.
     _midiCapture.setOfflineMode(true);
+    // Discard any real-time-phase spectral samples still buffered from playback so
+    // they don't survive across the offline boundary. Engine is stopped — no producer.
+    _messageCapture.resetRing();
 }
 
 - (void)resumeAfterOfflineRender {
@@ -556,6 +688,10 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // Route MIDI capture back to the real-time ring BEFORE the engine restarts,
     // so the first resumed render callback is already in real-time mode.
     _midiCapture.setOfflineMode(false);
+    // Discard anything the spectral ring accumulated across the offline window (should
+    // be empty — delivery was off — but keep the boundary clean) before the engine
+    // restarts, so the first resumed real-time samples start fresh.
+    _messageCapture.resetRing();
     [_engine prepare];
     NSError *error = nil;
     if (![_engine startAndReturnError:&error])
@@ -566,6 +702,8 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // so the training-computed values that ParameterStore already holds are
     // not displaced.
     _paramCapture.setDeliveryEnabled(true);
+    // Re-enable spectral delivery so live playback repopulates the histogram.
+    _messageCapture.setDeliveryEnabled(true);
 }
 
 // Iterates RNBO's external data refs, loads any file-backed ones from the app
@@ -815,6 +953,21 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     return [result copy];
 }
 
+- (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearSpectralEvents {
+    // Drain the lock-free spectral ring on the main thread and box each POD sample
+    // into a dictionary here (never on the audio thread). "feature" is
+    // 0 = SpectralCentroid, 1 = SpectralFlatness (matches SpectralFeature).
+    std::vector<SpectralMsg> msgs = _messageCapture.drainRing();
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:msgs.size()];
+    for (const SpectralMsg &m : msgs) {
+        [result addObject:@{
+            @"feature": @(m.feature),
+            @"value":   @(m.value)
+        }];
+    }
+    return [result copy];
+}
+
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearMidiEvents {
     std::vector<RNBO::MidiEvent> events = _midiCapture.collectAndClear();
     NSMutableArray *result = [NSMutableArray arrayWithCapacity:events.size()];
@@ -870,6 +1023,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
     _midiCapture.drain();
     _paramCapture.drain();
+    _messageCapture.drain(); // delivery disabled during offline — drops events, keeps queue empty
     _midiCapture.collectAndClear(); // discard pre-warm events
 
     // Record absolute RNBO engine time at the start of the main render loop.
@@ -895,6 +1049,7 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
         _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
         _midiCapture.drain();
         _paramCapture.drain();
+        _messageCapture.drain(); // delivery disabled during offline — drops events, keeps queue empty
 
         if (audioFile) {
             float * const *ch = pcmBuf.floatChannelData;

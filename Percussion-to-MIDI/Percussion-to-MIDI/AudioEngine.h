@@ -84,6 +84,17 @@
 - (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearRealTimeMidiEvents
     NS_SWIFT_NAME(collectAndClearRealTimeMidiEvents());
 
+/// Returns all spectral outport messages (SpectralCentroid / SpectralFlatness)
+/// captured during real-time playback since the last call, and clears the buffer.
+/// Drained from a lock-free ring the audio thread fills; boxing happens here on the
+/// main thread. Each element is an NSDictionary with keys:
+///   "feature" → NSNumber (int)    — 0 = SpectralCentroid, 1 = SpectralFlatness
+///   "value"   → NSNumber (double) — the measured spectral value
+/// Delivery is suppressed during offline renders, so this only reflects live playback.
+/// Safe to call from the main thread.
+- (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearSpectralEvents
+    NS_SWIFT_NAME(collectAndClearSpectralEvents());
+
 /// Offline audio export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
 /// device) and writes the processed output to an audio file at `url`. Blocking — call from a
 /// background thread. Call stopForOfflineRender() on the main thread before dispatching.

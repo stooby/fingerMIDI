@@ -1274,7 +1274,7 @@ captures everything. Negligible at a manual seek point.
 
 ---
 
-### Step 14.5 - SpecFlatCutoff and SpecCentCutoff HorizontalSliderView Controls
+### Step 14.5 - SpecFlatCutoff and SpecCentCutoff HorizontalSliderView Controls (IMPLEMENTED)
 
 Replaces the generic rotary knobs for `SpecCentCutoff` and `SpecFlatCutoff` with two purpose-built
 horizontal sliders, each backed by a live, fading **histogram** of the spectral values the RNBO patch
@@ -1330,11 +1330,17 @@ flatness 1.0), bar color, value format, and its min/max icon views.
 
 #### Dynamic display axis (high-water mark)
 
-`axisMax` starts at the default and is a monotonic high-water mark: when a value `v > axisMax` is
-received, it expands to `v + offset`, where `offset = maxAxisDisplayValuePercentageOffset% × fullRange`
-(centroid 300, flatness 0.03). It never shrinks within a session, also encompasses the current cutoff
-value so dragging the cutoff high never clips its bar, and resets to the default on new-file import (when
-the histogram clears). The label in the upper-right corner always shows the current extent.
+`axisMax` starts at the default and is a monotonic high-water mark driven **only by measured spectral
+values**: when a value `v > axisMax` is received, it expands to `v + offset`, where
+`offset = maxAxisDisplayValuePercentageOffset% × fullRange` (centroid 300, flatness 0.03). It never
+shrinks within a session and resets to the default on new-file import (when the histogram clears). The
+label in the upper-right corner always shows the current extent.
+
+The axis does **not** expand to follow the cutoff. Instead the cutoff is **clamped to `axisMax`** — in
+both the slider gesture (`[paramMin, min(paramMax, axisMax)]`) and the number box (its max is
+`min(param.max, axisMax)`). So dragging the yellow bar to the far right pins it at `axisMax` (e.g. 8000
+for centroid) without zooming the visible value range out; the axis only ever grows when an actual
+spectral value exceeds it, keeping all measured bars and the Snare-side region visible.
 
 Existing bars reposition **for free** when `axisMax` grows: samples store only their raw `value`; the
 on-screen x is derived each frame from the *current* `axisMax`, so the next redraw places every bar at its
@@ -1395,22 +1401,24 @@ thread. A third `EventHandler` interface is still added (one subclass per event 
   members / the `fileMs` field), and **no seek settling window** (`armSeekSettle` / `_settleUntilRnboMs`).
   `SpectralMsg` carries only `{feature, value}` — spectral bars are plotted on the *value* axis, not a time
   axis, and the histogram is playhead-position-independent, so neither timestamps nor seek handling apply.
-  Its `collectAndClear()` drains its own `SpectralMsg _ring` (`[readIdx, writeIdx)`) into a
-  `std::vector<SpectralMsg>` on the **main thread**.
+  Two consumer-side (main-thread) methods drain the ring: `drainRing()` copies `[readIdx, writeIdx)` into a
+  `std::vector<SpectralMsg>`, and `resetRing()` discards buffered samples by advancing `readIdx` to
+  `writeIdx` (safe while the producer runs).
 - A third `ParameterEventInterface` (`_messageListenerInterface`, handler `_messageCapture`) is created in
   `-init` and `.reset()` in `-dealloc` before the handler is destroyed. `_messageCapture.drain()` is
   called after every `core->process()` — real-time render block and offline loops — alongside the existing
-  `_midiCapture` / `_paramCapture` drains.
+  `_midiCapture` / `_paramCapture` drains (draining during offline, with delivery disabled, keeps RNBO's
+  event queue from backing up).
 - **Live-playback only:** `_messageCapture`'s `_deliveryEnabled` is bracketed false/true around offline
   renders (in `-stopForOfflineRender` / `-resumeAfterOfflineRender`), so `Analyze Onsets` / `Export MIDI`
-  do not populate the histogram. In addition, `_messageCapture.collectAndClear()` is called once to discard
-  buffered samples at offline-loop **entry and exit** — mirroring the `_midiCapture.collectAndClear()`
-  discards that already bracket the offline loop — so no real-time-phase spectral samples bleed across the
-  render boundary.
+  do not populate the histogram. In addition, `_messageCapture.resetRing()` is called in
+  `-stopForOfflineRender` (after `[_engine stop]`, so no producer races it) and in
+  `-resumeAfterOfflineRender` (before the engine restarts), discarding any real-time-phase samples still
+  buffered so none bleed across the render boundary.
 - `AudioEngine.h` exposes a **receive-only pull method** `collectAndClearSpectralEvents()` (mirrors
   `collectAndClearRealTimeMidiEvents`), returning the batch accumulated since the last call as
-  `NSArray<NSDictionary *>` with keys `"feature"` (`NSNumber` int) and `"value"` (`NSNumber` double). The
-  `NSDictionary` boxing happens on the main thread inside `collectAndClear`, not on the audio thread. No
+  `NSArray<NSDictionary *>` with keys `"feature"` (`NSNumber` int) and `"value"` (`NSNumber` double). It
+  calls `drainRing()` and does the `NSDictionary` boxing on the main thread, not on the audio thread. No
   callback block property is added, and nothing is written back to RNBO.
 
 #### ParameterStore additions
@@ -1423,19 +1431,24 @@ thread. A third `EventHandler` interface is still added (one subclass per event 
 - `pollSpectralEvents()` (main thread): calls `engine.collectAndClearSpectralEvents()` and loops the batch
   into `recordSpectral(feature:value:)`. This is the **pull** counterpart to `pollRealTimeMidiEvents()` —
   there is no engine callback; samples are drained on `ContentView`'s existing playback-gated timer (see
-  *ContentView changes*). Sample arrays + axis maxes are cleared/reset wherever the file/overlay resets on
-  import.
+  *ContentView changes*).
+- `clearSpectral()` empties both sample arrays and resets both axis maxes to their defaults; called on new
+  file import alongside the MIDI-overlay reset.
 
 #### HorizontalSliderView.swift — new views
 
 New file, auto-included by the Xcode file-system-synchronized root group (no `project.pbxproj` edits):
 
 - `HorizontalSliderView` — one row's `Canvas` (bars, yellow cutoff bar, `axisMax` label) plus a `ZStack`
-  overlay for the Kick/Snare drum markers positioned at `cutoffX`. Its drag gesture maps pointer-x →
-  value across `[0, axisMax]`, clamped to the parameter's range, with shift = ×10 fine control and
-  double-click reset — reusing `RotarySlider`'s gesture/clamp logic and `WaveformView`'s seek-x mapping.
-- `SpectralCentroidIcon` / `SpectralFlatnessIcon` (grey), and `Kick` / `Snare` drum-marker views.
-- `InputValueField` (reused, given a bordered style) for the number boxes.
+  overlay for the Kick/Snare drum markers positioned at `cutoffX`. Its gesture is **click-to-position**
+  (absolute — `DragGesture(minimumDistance: 0)`, reusing `WaveformView`'s seek-x mapping): the pointer x
+  maps directly to `value = fraction · axisMax`, clamped to `[paramMin, min(paramMax, axisMax)]` so the
+  cutoff can't be pushed past the visible axis. Double-click resets to the RNBO default. (Precision is via
+  the number box; there is no shift-fine mode.)
+- `SpectralCentroidIcon` / `SpectralFlatnessIcon` (grey), and `KickDrumIcon` / `SnareDrumIcon` drum-marker
+  views (custom `Canvas`/`Path` glyphs).
+- `InputValueField` (reused, wrapped in a bordered container) for the number boxes, its max clamped to
+  `axisMax` per row.
 - `SpectralSlidersView` — the container `ContentView` inserts. Looks up both params by `rnboId` (renders
   nothing if either is missing), assembles the column-aligned two-row layout with the grey border/divider,
   and wraps everything in its **own dedicated** `TimelineView(.periodic, 30 fps)` **solely to drive the fade
@@ -1468,8 +1481,9 @@ New file, auto-included by the Xcode file-system-synchronized root group (no `pr
    values. Kick/Snare markers flank each cutoff; `axisMax` shows upper-right.
 2. Feed a value beyond the default axis → the axis expands with 3% headroom and existing bars/handle
    reposition without clipping.
-3. Drag a slider / edit its number box → cutoff updates both ways; shift-drag = fine; double-click =
-   reset. `SpecCentCutoff` / `SpecFlatCutoff` no longer appear as rotary knobs.
+3. Click/drag a slider (click-to-position) or edit its number box → cutoff updates both ways and clamps
+   to `axisMax` (dragging to the far right pins it at `axisMax` without zooming the axis out); double-click
+   = reset. `SpecCentCutoff` / `SpecFlatCutoff` no longer appear as rotary knobs.
 4. Run **Analyze Onsets** / **Export MIDI** → histogram does not populate from the offline pass, and
    trained cutoff values still mirror into the sliders.
 5. Import a second file → histogram clears and axis maxes reset to defaults.
