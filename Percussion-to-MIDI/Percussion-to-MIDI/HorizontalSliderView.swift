@@ -187,7 +187,11 @@ struct HorizontalSliderView: View {
 
 // MARK: - Spectral min/max icons (grey vector glyphs)
 
-/// SpectralCentroid: a spectral energy bump, skewed low (min) or high (max).
+/// SpectralCentroid: a localized gaussian "energy hump" on a full-width baseline —
+/// peaked toward the low (left) end for min, the high (right) end for max. Matches the
+/// mockup: a single bell whose apex sits in the left / right third, with the baseline
+/// running the full width. Drawn inside a vertically-centered landscape band so the
+/// bell keeps its proportions regardless of the (portrait) icon slot.
 struct SpectralCentroidIcon: View {
     let isMax: Bool
     var color: Color = .gray
@@ -195,70 +199,131 @@ struct SpectralCentroidIcon: View {
     var body: some View {
         Canvas { ctx, size in
             let w = size.width, h = size.height
-            var base = Path()
-            base.move(to: CGPoint(x: 1, y: h * 0.82))
-            base.addLine(to: CGPoint(x: w - 1, y: h * 0.82))
-            ctx.stroke(base, with: .color(color.opacity(0.45)), lineWidth: 0.8)
+            let bandLeft: CGFloat = 1
+            let bandW = w - 2 * bandLeft
+            let bandH = bandW / 1.55                 // landscape (~mockup aspect)
+            let bandTop = (h - bandH) / 2
+            let yBase = bandTop + bandH              // baseline / bell feet
+            let amp = bandH                          // apex height above baseline
 
-            let peakX = isMax ? w * 0.68 : w * 0.32
-            var bump = Path()
-            bump.move(to: CGPoint(x: 1, y: h * 0.82))
-            bump.addCurve(to: CGPoint(x: peakX, y: h * 0.2),
-                          control1: CGPoint(x: peakX * 0.5, y: h * 0.82),
-                          control2: CGPoint(x: peakX * 0.78, y: h * 0.2))
-            bump.addCurve(to: CGPoint(x: w - 1, y: h * 0.82),
-                          control1: CGPoint(x: peakX + (w - peakX) * 0.22, y: h * 0.2),
-                          control2: CGPoint(x: peakX + (w - peakX) * 0.5, y: h * 0.82))
-            ctx.stroke(bump, with: .color(color), lineWidth: 1.3)
+            // Full-width baseline.
+            var base = Path()
+            base.move(to: CGPoint(x: bandLeft, y: yBase))
+            base.addLine(to: CGPoint(x: w - bandLeft, y: yBase))
+            ctx.stroke(base, with: .color(color),
+                       style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+
+            // Localized gaussian bell, apex in the left (min) or right (max) third.
+            let mu = bandLeft + bandW * (isMax ? 0.76 : 0.24)
+            let sigma = bandW * 0.066
+            var bell = Path()
+            let steps = 64
+            for i in 0...steps {
+                let t = CGFloat(i) / CGFloat(steps)          // 0…1
+                let x = mu + (t * 2 - 1) * 3.2 * sigma       // mu-3.2σ … mu+3.2σ
+                let u = Double((x - mu) / sigma)
+                let y = yBase - amp * CGFloat(exp(-u * u / 2))
+                if i == 0 { bell.move(to: CGPoint(x: x, y: y)) }
+                else { bell.addLine(to: CGPoint(x: x, y: y)) }
+            }
+            ctx.stroke(bell, with: .color(color),
+                       style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
         }
+        .contentShape(Rectangle())
+        .help("Spectral Centroid: 0 Hz (Min) | 10000 Hz (Max)")
     }
 }
 
-/// SpectralFlatness: a tonal peak with a dotted noise floor (min), or a comb of equal
-/// partials under a bracket (max, flat/noisy spectrum).
+/// SpectralFlatness: a discrete stem/lollipop spectrum. **max** — every frequency bin
+/// equal and tall (broadband noise → maximally flat spectrum). **min** — a single tall
+/// center peak (with a main-lobe bell + apex dot) among short flanking bins (a pure sine
+/// → one dominant bin). Both sit on a full-width baseline; each stem is capped with a
+/// filled circle; the min caps are drawn a touch smaller.
 struct SpectralFlatnessIcon: View {
     let isMax: Bool
     var color: Color = .gray
 
+    private static let binCount = 9
+
     var body: some View {
         Canvas { ctx, size in
             let w = size.width, h = size.height
+            // Vertically-centered landscape band matching the SpectralCentroidIcon's
+            // extent, so this icon is the same (short) height as the centroid icon and
+            // the number box — not the full row height.
+            let bandH = (w - 2) / 1.55
+            let bandTop = (h - bandH) / 2
+            let yBase = bandTop + bandH               // baseline / short-bin & peak feet
+            let yTall = bandTop                        // tall stem / peak apex
+
+            let n = Self.binCount
+            let inset = w * 0.06
+            let spanW = w - 2 * inset
+            let spacing = spanW / CGFloat(n)
+            func binX(_ i: Int) -> CGFloat { inset + spacing * (CGFloat(i) + 0.5) }
+
+            let stemWidth: CGFloat = 1.5               // thicker lines / round caps
+
+            // Full-width baseline.
+            var base = Path()
+            base.move(to: CGPoint(x: 1, y: yBase))
+            base.addLine(to: CGPoint(x: w - 1, y: yBase))
+            ctx.stroke(base, with: .color(color),
+                       style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
+
+            func lollipop(_ cx: CGFloat, top: CGFloat, r: CGFloat) {
+                var stem = Path()
+                stem.move(to: CGPoint(x: cx, y: yBase))
+                stem.addLine(to: CGPoint(x: cx, y: top))
+                ctx.stroke(stem, with: .color(color),
+                           style: StrokeStyle(lineWidth: stemWidth, lineCap: .round))
+                ctx.fill(Path(ellipseIn: CGRect(x: cx - r, y: top - r, width: 2 * r, height: 2 * r)),
+                         with: .color(color))
+            }
+
             if isMax {
-                let n = 6
-                for i in 0..<n {
-                    let x = w * (CGFloat(i) + 0.5) / CGFloat(n)
-                    var p = Path()
-                    p.move(to: CGPoint(x: x, y: h * 0.26))
-                    p.addLine(to: CGPoint(x: x, y: h * 0.82))
-                    ctx.stroke(p, with: .color(color), lineWidth: 1.1)
-                }
-                var top = Path()
-                top.move(to: CGPoint(x: w * 0.06, y: h * 0.22))
-                top.addLine(to: CGPoint(x: w * 0.94, y: h * 0.22))
-                ctx.stroke(top, with: .color(color.opacity(0.55)), lineWidth: 0.9)
+                // All 9 bins equal and tall.
+                let r = spacing * 0.40
+                for i in 0..<n { lollipop(binX(i), top: yTall, r: r) }
             } else {
-                var peak = Path()
-                peak.move(to: CGPoint(x: w * 0.5, y: h * 0.16))
-                peak.addLine(to: CGPoint(x: w * 0.5, y: h * 0.8))
-                ctx.stroke(peak, with: .color(color), lineWidth: 1.4)
+                // One tall center peak (bell main-lobe + thin stem + apex dot) among short bins.
+                let c = n / 2
+                let xc = binX(c)
+                let rMin = spacing * 0.32              // slightly smaller caps
 
-                var skirt = Path()
-                skirt.move(to: CGPoint(x: w * 0.30, y: h * 0.8))
-                skirt.addQuadCurve(to: CGPoint(x: w * 0.5, y: h * 0.2),
-                                   control: CGPoint(x: w * 0.44, y: h * 0.74))
-                skirt.move(to: CGPoint(x: w * 0.70, y: h * 0.8))
-                skirt.addQuadCurve(to: CGPoint(x: w * 0.5, y: h * 0.2),
-                                   control: CGPoint(x: w * 0.56, y: h * 0.74))
-                ctx.stroke(skirt, with: .color(color.opacity(0.55)), lineWidth: 0.8)
-
-                let dots = 7
-                for i in 0..<dots {
-                    let x = w * (CGFloat(i) + 0.5) / CGFloat(dots)
-                    ctx.fill(Path(ellipseIn: CGRect(x: x - 0.6, y: h * 0.85, width: 1.2, height: 1.2)),
-                             with: .color(color.opacity(0.6)))
+                // Main-lobe bell centered on the peak.
+                let sigma = spanW * 0.10
+                let amp = yBase - yTall
+                var bell = Path()
+                let steps = 56
+                for i in 0...steps {
+                    let t = CGFloat(i) / CGFloat(steps)
+                    let bx = xc + (t * 2 - 1) * 3 * sigma
+                    let u = Double((bx - xc) / sigma)
+                    let by = yBase - amp * CGFloat(exp(-u * u / 2))
+                    if i == 0 { bell.move(to: CGPoint(x: bx, y: by)) }
+                    else { bell.addLine(to: CGPoint(x: bx, y: by)) }
                 }
+                ctx.stroke(bell, with: .color(color),
+                           style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+
+                // Flanking bins sit UNDER the bell: capped so they never rise above the
+                // bell path, and near-flush with the baseline outside the bell's span.
+                let shortH = bandH * 0.40             // max height for bins under the bell
+                let flushH = rMin                     // dot resting on the baseline
+                for i in 0..<n where i != c {
+                    let bx = binX(i)
+                    let u = Double((bx - xc) / sigma)
+                    let bellH = amp * CGFloat(exp(-u * u / 2))
+                    let binH = bellH > flushH ? min(shortH, bellH) : flushH
+                    lollipop(bx, top: yBase - binH, r: rMin)
+                }
+                // Tall center peak (thin stem up the bell to the apex dot).
+                lollipop(xc, top: yTall, r: rMin)
             }
         }
+        .contentShape(Rectangle())
+        .help("Spectral Flatness: 0.0 (Min / Pure Sine Tone) | 1.0 (Max / Pure Noise)")
     }
 }
 

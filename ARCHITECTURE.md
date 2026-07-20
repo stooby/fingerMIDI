@@ -1309,9 +1309,10 @@ Inside each canvas:
   and the waveform overlay share one colour language.
 - The current **`axisMax`** is drawn as a small label in the canvas's upper-right corner.
 
-Spectral min/max icons are self-contained grey vector `Shape`/`Path` glyphs: centroid = rounded energy
-bumps (low/high); flatness = a tonal peak with a dotted tail (min) and a comb of equal vertical lines
-(max, noise-like).
+Spectral min/max icons are self-contained grey vector `Canvas`/`Path` glyphs, each on a full-width
+baseline: centroid = a localized gaussian energy hump peaked toward the low (left, min) / high (right,
+max) end; flatness = a discrete lollipop-stem spectrum — a single tall center peak with a main-lobe bell
+among short flanking bins (min, a pure tone) versus all bins equal and tall (max, broadband noise).
 
 #### Configuration constants
 
