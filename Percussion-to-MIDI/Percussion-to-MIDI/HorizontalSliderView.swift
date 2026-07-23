@@ -165,7 +165,7 @@ struct HorizontalSliderView: View {
 
     private func drumMarker<Icon: View>(icon: Icon, label: String, color: Color) -> some View {
         VStack(spacing: 1) {
-            icon.frame(width: 15, height: 15)
+            icon.frame(width: 18, height: 18)
             Text(label).font(.system(size: 9, weight: .semibold)).foregroundColor(color)
         }
     }
@@ -329,34 +329,102 @@ struct SpectralFlatnessIcon: View {
 
 // MARK: - Kick / Snare drum glyphs (colored)
 
+/// Bass drum, front view: a large shell ring with two splayed legs/feet and a
+/// center beater (ball on a rod) mounted on a trapezoidal pedal footboard.
 struct KickDrumIcon: View {
     let color: Color
     var body: some View {
         Canvas { ctx, size in
-            let d = min(size.width, size.height)
-            let c = CGPoint(x: size.width / 2, y: size.height / 2)
-            let r = d / 2 - 1
-            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
-                       with: .color(color), lineWidth: 1.4)
-            let r2 = r * 0.42
-            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r2, y: c.y - r2, width: 2 * r2, height: 2 * r2)),
-                       with: .color(color), lineWidth: 1.0)
+            let w = size.width, h = size.height
+            let s = min(w, h)
+            let lw = max(1.0, s * 0.085)
+            let cx = w * 0.5
+
+            // Shell (front head) — large ring in the upper portion.
+            let ringR = s * 0.36
+            let ringCy = h * 0.42
+            ctx.stroke(Path(ellipseIn: CGRect(x: cx - ringR, y: ringCy - ringR,
+                                              width: 2 * ringR, height: 2 * ringR)),
+                       with: .color(color), lineWidth: lw)
+
+            // Two legs splaying from the lower shell to small feet.
+            func leg(_ dir: CGFloat) {
+                let x0 = cx + dir * ringR * 0.66, y0 = ringCy + ringR * 0.60
+                let x1 = cx + dir * ringR * 1.18, y1 = h * 0.92
+                var p = Path()
+                p.move(to: CGPoint(x: x0, y: y0)); p.addLine(to: CGPoint(x: x1, y: y1))
+                ctx.stroke(p, with: .color(color), style: StrokeStyle(lineWidth: lw * 0.8, lineCap: .round))
+                let fr = lw * 0.75
+                ctx.fill(Path(ellipseIn: CGRect(x: x1 - fr, y: y1 - fr, width: 2 * fr, height: 2 * fr)),
+                         with: .color(color))
+            }
+            leg(-1); leg(1)
+
+            // Pedal footboard (trapezoid) at the bottom center.
+            let pedalTop = h * 0.66, pedalBot = h * 0.92
+            var pedal = Path()
+            pedal.move(to: CGPoint(x: cx - w * 0.055, y: pedalTop))
+            pedal.addLine(to: CGPoint(x: cx + w * 0.055, y: pedalTop))
+            pedal.addLine(to: CGPoint(x: cx + w * 0.10, y: pedalBot))
+            pedal.addLine(to: CGPoint(x: cx - w * 0.10, y: pedalBot))
+            pedal.closeSubpath()
+            ctx.fill(pedal, with: .color(color))
+
+            // Beater: rod from the footboard up to a ball near the shell center.
+            let ballR = s * 0.09
+            let ballCy = ringCy + ringR * 0.12
+            var rod = Path()
+            rod.move(to: CGPoint(x: cx, y: ballCy)); rod.addLine(to: CGPoint(x: cx, y: pedalTop))
+            ctx.stroke(rod, with: .color(color), lineWidth: lw * 0.7)
+            ctx.fill(Path(ellipseIn: CGRect(x: cx - ballR, y: ballCy - ballR,
+                                            width: 2 * ballR, height: 2 * ballR)),
+                     with: .color(color))
         }
     }
 }
 
+/// Snare drum, slight 3/4 view: a top rim ellipse, cylindrical shell sides, a
+/// curved bottom edge, and evenly-spaced vertical tension lugs across the front.
 struct SnareDrumIcon: View {
     let color: Color
     var body: some View {
         Canvas { ctx, size in
             let w = size.width, h = size.height
-            let rect = CGRect(x: 1.5, y: h * 0.3, width: w - 3, height: h * 0.4)
-            ctx.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: 1.3)
-            for f in [0.42, 0.5, 0.58] as [CGFloat] {
+            let lw = max(1.0, min(w, h) * 0.08)
+            let cx = w * 0.5
+            let rx = w * 0.42
+            let ry = h * 0.14
+            let topCy = h * 0.28
+            let botCy = h * 0.64
+
+            // Top rim.
+            ctx.stroke(Path(ellipseIn: CGRect(x: cx - rx, y: topCy - ry, width: 2 * rx, height: 2 * ry)),
+                       with: .color(color), lineWidth: lw)
+
+            // Shell sides.
+            var sides = Path()
+            sides.move(to: CGPoint(x: cx - rx, y: topCy)); sides.addLine(to: CGPoint(x: cx - rx, y: botCy))
+            sides.move(to: CGPoint(x: cx + rx, y: topCy)); sides.addLine(to: CGPoint(x: cx + rx, y: botCy))
+            ctx.stroke(sides, with: .color(color), lineWidth: lw)
+
+            // Curved bottom edge (front half of the lower ellipse).
+            var bot = Path()
+            bot.move(to: CGPoint(x: cx - rx, y: botCy))
+            bot.addQuadCurve(to: CGPoint(x: cx + rx, y: botCy), control: CGPoint(x: cx, y: botCy + ry * 2))
+            ctx.stroke(bot, with: .color(color), lineWidth: lw)
+
+            // Vertical tension lugs with small hardware at their centers.
+            let lugTop = topCy + ry * 0.6
+            let lugBot = botCy - ry * 0.15
+            let lugY = (lugTop + lugBot) / 2
+            for f in [-0.66, -0.33, 0.0, 0.33, 0.66] as [CGFloat] {
+                let x = cx + rx * f
                 var p = Path()
-                p.move(to: CGPoint(x: rect.minX, y: h * f))
-                p.addLine(to: CGPoint(x: rect.maxX, y: h * f))
-                ctx.stroke(p, with: .color(color.opacity(0.75)), lineWidth: 0.7)
+                p.move(to: CGPoint(x: x, y: lugTop)); p.addLine(to: CGPoint(x: x, y: lugBot))
+                ctx.stroke(p, with: .color(color), lineWidth: lw * 0.6)
+                let lr = lw * 0.5
+                ctx.fill(Path(ellipseIn: CGRect(x: x - lr, y: lugY - lr, width: 2 * lr, height: 2 * lr)),
+                         with: .color(color))
             }
         }
     }
