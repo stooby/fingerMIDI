@@ -139,7 +139,7 @@ final class ParameterStore {
         "Onset/needs_init":      .init(label: "Onset Needs Init",  controlType: .toggle,      order:  1),
         "EnableTraining":        .init(label: "Enable Training",   controlType: .toggle,      order:  2),
 
-        // Onset detection tuning — number inputs, positioned right of the toggle row.
+        // Onset detection tuning — number inputs, in the main toolbar right of the onset toggle buttons.
         "Onset/thresh":          .init(label: "Thresh",            controlType: .numberInput, order:  3, initialOverride:  0.5),
         "Onset/relaxtime":       .init(label: "Relax",             controlType: .numberInput, order:  4, initialOverride:  0.5),
         "Onset/floor":           .init(label: "Floor",             controlType: .numberInput, order:  5, initialOverride:  0.1),
@@ -338,7 +338,7 @@ struct NumberInputCell: View {
                 }
                 .onSubmit { isFocused = false }
             Text(param.label)
-                .font(.caption2)
+                .font(.parameterLabel)
                 .foregroundStyle(.secondary)
                 .frame(width: 62)
                 .multilineTextAlignment(.center)
@@ -378,7 +378,7 @@ struct InputValueField: View {
     var body: some View {
         TextField("", text: $editText)
             .textFieldStyle(.plain)
-            .font(.caption2)
+            .font(.parameterValueLabel)
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
@@ -426,7 +426,7 @@ struct ContentView: View {
     @State private var openRealTimeNoteOns: [UInt8: (onsetMs: Double, velocity: UInt8)] = [:]
     // Accumulated real-time playback duration (ms) since the last reset event (param change,
     // seek, or file import). When this reaches totalDurationMs, the full file has been
-    // processed in real-time with the current params and "Analyze Onsets" can be disabled.
+    // processed in real-time with the current params and "Analyze" can be disabled.
     @State private var realTimeCoverageMs: Double = 0
 
     private var engine: AudioEngine { store.engine }
@@ -451,7 +451,7 @@ struct ContentView: View {
     }
 
     // True when onset tuning parameters differ from the last analysis snapshot, or no analysis
-    // has been run yet for the current file. Drives the "Analyze Onsets" button enabled state.
+    // has been run yet for the current file. Drives the "Analyze" button enabled state.
     private var onsetParamsDirty: Bool {
         guard let last = lastAnalyzedOnsetParams else { return true }
         return paramsChanged(from: last)
@@ -467,7 +467,7 @@ struct ContentView: View {
     }
 
     // True when the full file has been processed in real-time with the current onset params,
-    // making an explicit "Analyze Onsets" pass redundant. Resets on param change, seek, or import.
+    // making an explicit "Analyze" pass redundant. Resets on param change, seek, or import.
     private var fullRealTimeCoverageAchieved: Bool {
         totalDurationMs > 0 && realTimeCoverageMs >= totalDurationMs && !midiNoteOverlay.isEmpty
     }
@@ -533,7 +533,7 @@ struct ContentView: View {
             }
             .frame(height: 150)
 
-            transportControls.padding()
+            mainToolbar.padding()
 
             // SpecCentCutoff / SpecFlatCutoff horizontal sliders with live spectral
             // histograms. Renders only when both cutoff params exist in the patch.
@@ -544,6 +544,11 @@ struct ContentView: View {
                 parametersPanel
             }
         }
+        // Window sizing (points, not pixels — a 2× Retina display renders these at 2252×982):
+        // fixed 490 height (min == max), and a 1126 floor on width that can grow but not shrink.
+        // Paired with .windowResizability(.contentSize) on the WindowGroup in Percussion_to_MIDIApp.
+        .frame(minWidth: 1126, idealWidth: 1126, maxWidth: 2252,
+               minHeight: 490, maxHeight: 490)
         .onReceive(Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()) { _ in
             guard isPlaying else { return }
             realTimeCoverageMs += 1000.0 / 15.0
@@ -603,34 +608,42 @@ struct ContentView: View {
 
     // MARK: Transport
 
-    private var transportControls: some View {
-        ZStack {
-            HStack {
-                Button("Import Audio") { showFilePicker = true }
-                    .buttonStyle(.bordered)
-                Spacer()
-                HStack(spacing: 8) {
-                    Button("Export Audio") { exportAudioOffline() }
-                        .buttonStyle(.bordered)
-                    Button("Export MIDI") { exportMIDIOffline() }
-                        .buttonStyle(.bordered)
-                    Button("Analyze Onsets") { analyzeMIDI() }
-                        .buttonStyle(.bordered)
-                        .disabled(!fileLoaded || isPlaying || isExporting || isMIDIAnalyzing || !onsetParamsDirty || fullRealTimeCoverageAchieved)
+    private var mainToolbar: some View {
+        HStack(spacing: 12) {
+            // Onset section: label + toggles + Analyze + tuning number boxes.
+            // (Grouped in a nested HStack to stay within ViewBuilder's subview limit;
+            // spacing matches the outer stack so the layout reads as one flat row.)
+            HStack(spacing: 12) {
+                Text("ONSET\nDETECTOR")
+                    .font(.system(size: 13, weight: .bold))
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+                    .fixedSize()
+
+                if let (i, _) = indexed("Onset/enable") {
+                    iconToggle(i: i, systemImage: "power")
                 }
-                .disabled(!fileLoaded || isExporting || isMIDIAnalyzing)
-                .overlay {
-                    if isExporting || isMIDIAnalyzing {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text(isExporting ? "Exporting…" : "Analyzing…").font(.caption)
-                        }
-                        .padding(6)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                if let (i, _) = indexed("Onset/needs_init") {
+                    iconToggle(i: i, systemImage: "x.circle.fill")
+                }
+                if let (i, _) = indexed("EnableTraining") {
+                    textToggle(i: i, title: "Train")
+                }
+                Button("Analyze") { analyzeMIDI() }
+                    .buttonStyle(.bordered)
+                    .disabled(!fileLoaded || isPlaying || isExporting || isMIDIAnalyzing || !onsetParamsDirty || fullRealTimeCoverageAchieved)
+
+                // Onset tuning number boxes (Thresh / Relax / Floor / Min Gap / Med Span)
+                ForEach(indexedParams(ofType: .numberInput), id: \.0) { i, param in
+                    NumberInputCell(param: param, value: store.values[i]) { newVal in
+                        store.set(value: newVal, at: i)
                     }
                 }
             }
 
+            Spacer()
+
+            // Transport (record button intentionally omitted — no capture backend yet).
             HStack(spacing: 8) {
                 Button { engine.rewindToStart() } label: {
                     Image(systemName: "backward.end.fill")
@@ -650,10 +663,58 @@ struct ContentView: View {
                     isPlaying.toggle()
                 } label: {
                     Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                        .whiteButtonIcon()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(isPlaying ? .red : .accentColor)
+                .tint(isPlaying ? Color.crayonTurquoise.opacity(0.5) : .accentColor)
                 .disabled(!fileLoaded)
+            }
+
+            Spacer()
+
+            // Import / Export — Import stays always-enabled; Export group keeps the
+            // shared disable + the Exporting…/Analyzing… overlay spinner.
+            HStack(spacing: 8) {
+                Button { showFilePicker = true } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "square.and.arrow.down")
+                        Image(systemName: "waveform")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.crayonMagenta.opacity(0.25))
+
+                HStack(spacing: 8) {
+                    Button { exportAudioOffline() } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "square.and.arrow.up")
+                            Image(systemName: "waveform")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.crayonTangerine.opacity(0.25))
+
+                    Button { exportMIDIOffline() } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "square.and.arrow.up")
+                            Image(systemName: "music.quarternote.3")
+                        }
+                        .whiteButtonIcon()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.crayonSpring.opacity(0.25))
+                }
+                .disabled(!fileLoaded || isExporting || isMIDIAnalyzing)
+                .overlay {
+                    if isExporting || isMIDIAnalyzing {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(isExporting ? "Exporting…" : "Analyzing…").font(.caption)
+                        }
+                        .padding(6)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
             }
         }
     }
@@ -972,53 +1033,52 @@ struct ContentView: View {
         }
     }
 
+    // Returns the (storeArrayIndex, Param) for one specific RNBO parameter id — for
+    // hand-placed controls that need a particular param (distinct icon, custom order)
+    // rather than a whole control-type group. nil if the id isn't present in the patch.
+    private func indexed(_ rnboId: String) -> (Int, ParameterStore.Param)? {
+        guard let i = store.params.firstIndex(where: { $0.rnboId == rnboId }) else { return nil }
+        return (i, store.params[i])
+    }
+
+    // Onset Input sits in a fixed leading column whose width places the trailing divider at
+    // the left edge of the histogram sliders: 64pt number box + 8pt gap + 24pt icon + 8pt gap
+    // = 104pt. Both panels share the same leading inset, so the divider lines up with the
+    // black slider edge, and the knob still sits roughly under the number-box + icon region.
+    private static let onsetInputColumnWidth: CGFloat = 104
+
+    // Input/Output parameters (all rotaries except Onset Input), evenly distributed after the divider.
+    private static let IOrotaryOrder = [
+        "Input_dB", "DrumSynthOutput_dB",
+        "InputDelaySend_dB", "DrumSynthDelaySend_dB", "DelayOutput_dB"
+    ]
+
     private var parametersPanel: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Parameters").font(.headline)
+            HStack(alignment: .top, spacing: 0) {
+                // Onset Input — an onset-detector parameter, set apart from the IO
+                // params by a divider and pinned under the spectral left columns.
+                if let (i, param) = indexed("OnsetInput") {
+                    rotaryCell(i: i, param: param)
+                        .frame(width: Self.onsetInputColumnWidth)
+                }
+                Divider()
 
-                // Toggles + Onset number inputs — single row.
-                // Number inputs sit immediately right of the toggle buttons, separated
-                // by a divider. Space at the trailing edge is reserved for the future
-                // Onset/odftype combo box (to be added in a later step).
-                let toggles = indexedParams(ofType: .toggle)
-                let numberInputs = indexedParams(ofType: .numberInput)
-                if !toggles.isEmpty || !numberInputs.isEmpty {
-                    HStack(spacing: 10) {
-                        ForEach(toggles, id: \.0) { i, param in
-                            toggleButton(i: i, param: param)
-                        }
-                        if !numberInputs.isEmpty {
-                            Divider().frame(height: 40)
-                            ForEach(numberInputs, id: \.0) { i, param in
-                                NumberInputCell(
-                                    param: param,
-                                    value: store.values[i]
-                                ) { newVal in
-                                    store.set(value: newVal, at: i)
-                                }
-                            }
-                        }
-                        Spacer()
+                // IO parameters + Greyhole + Synth Mode, evenly distributed with
+                // equal spacers so they spread across the full remaining width.
+                ForEach(Self.IOrotaryOrder, id: \.self) { rnboId in
+                    Spacer()
+                    if let (i, param) = indexed(rnboId) {
+                        rotaryCell(i: i, param: param)
                     }
                 }
-
-                // Rotary sliders — 4-column grid
-                let rotaries = indexedParams(ofType: .rotary)
-                if !rotaries.isEmpty {
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
-                        spacing: 16
-                    ) {
-                        ForEach(rotaries, id: \.0) { i, param in
-                            rotaryCell(i: i, param: param)
-                        }
-                    }
+                Spacer()
+                if let (i, param) = indexed("GreyholeDelayFX_Controller/GreyholePreset") {
+                    greyholeControl(i: i, param: param)
                 }
-
-                // Discrete slider (GreyholePreset)
-                ForEach(indexedParams(ofType: .discrete), id: \.0) { i, param in
-                    discreteRow(i: i, param: param)
+                Spacer()
+                if let (i, _) = indexed("SynthMode") {
+                    synthModeControl(i: i)
                 }
             }
             .padding()
@@ -1027,13 +1087,28 @@ struct ContentView: View {
 
     // MARK: Control views
 
+    // Icon-only onset toggle (e.g. Onset Enable = power, Onset Needs Init = x.circle.fill).
+    // Same toggle semantics as before: value >= 0.5 is "on", tinted when on.
     @ViewBuilder
-    private func toggleButton(i: Int, param: ParameterStore.Param) -> some View {
+    private func iconToggle(i: Int, systemImage: String) -> some View {
         let isOn = store.values[i] >= 0.5
         Button {
             store.set(value: isOn ? 0 : 1, at: i)
         } label: {
-            Label(param.label, systemImage: isOn ? "checkmark.circle.fill" : "circle")
+            Image(systemName: systemImage)
+        }
+        .buttonStyle(.bordered)
+        .tint(isOn ? .accentColor : nil)
+    }
+
+    // Text onset toggle (e.g. Enable Training = "Train"). Same toggle semantics.
+    @ViewBuilder
+    private func textToggle(i: Int, title: String) -> some View {
+        let isOn = store.values[i] >= 0.5
+        Button {
+            store.set(value: isOn ? 0 : 1, at: i)
+        } label: {
+            Text(title)
         }
         .buttonStyle(.bordered)
         .tint(isOn ? .accentColor : nil)
@@ -1050,7 +1125,7 @@ struct ContentView: View {
             RotarySlider(value: binding, min: param.min, max: param.max, resetValue: resetValue)
                 .frame(width: 52, height: 52)
             Text(param.label)
-                .font(.caption2)
+                .font(.parameterLabel)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
             InputValueField(
@@ -1063,28 +1138,65 @@ struct ContentView: View {
         }
     }
 
+    // Greyhole preset: native discrete slider + randomize dice button
+    // The randomize action writes parameter value 9 to RNBO engine to trigger a complete randomization of all underlying "Greyhole Delay" parameters
     @ViewBuilder
-    private func discreteRow(i: Int, param: ParameterStore.Param) -> some View {
+    private func greyholeControl(i: Int, param: ParameterStore.Param) -> some View {
         let binding = Binding<Float>(
             get: { store.values[i] },
             set: { store.set(value: $0, at: i) }
         )
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(param.label)
-                Spacer()
-                Text(formattedValue(store.values[i], param: param))
-                    .monospacedDigit()
+        VStack(spacing: 4) {
+            Slider(value: binding, in: param.min...(param.max-1), step: 1)
+                .frame(width: 240)
+            // Label centered under the slider; dice pinned leading, value pinned trailing.
+            ZStack {
+                Text("Greyhole Delay Presets")
+                    .font(.parameterLabel)
                     .foregroundStyle(.secondary)
-                    .frame(width: 28, alignment: .trailing)
+                HStack(spacing: 6) {
+                    Button {
+                        engine.setParameter(index: param.rnboIndex, value: 9)
+                    } label: {
+                        Image(systemName: "dice")
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                    Text(formattedValue(store.values[i], param: param))
+                        .font(.parameterValueLabel).monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
             }
-            Slider(value: binding, in: param.min...param.max, step: 1)
-            if param.hasRandomize {
-                Button("Randomize") {
-                    engine.setParameter(index: param.rnboIndex, value: 9)
+            .frame(width: 240)
+        }
+    }
+
+    // Synth Mode: 2-state radio (waveform.circle.fill = 1, hockey.puck = 0). Writes the
+    // same 0/1 endpoints the old discrete slider did, so this is a lossless restyle.
+    @ViewBuilder
+    private func synthModeControl(i: Int) -> some View {
+        let isOne = store.values[i] >= 0.5
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Button { store.set(value: 1, at: i) } label: {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.system(size: 22))
+                        .frame(width: 40, height: 40)
                 }
                 .buttonStyle(.bordered)
+                .tint(isOne ? .accentColor : nil)
+
+                Button { store.set(value: 0, at: i) } label: {
+                    Image(systemName: "hockey.puck")
+                        .font(.system(size: 22))
+                        .frame(width: 40, height: 40)
+                }
+                .buttonStyle(.bordered)
+                .tint(isOne ? nil : .accentColor)
             }
+            Text("Synth Mode")
+                .font(.parameterLabel)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -1094,6 +1206,39 @@ struct ContentView: View {
         if range > 10 { return String(format: "%.1f", v) }
         return String(format: "%.2f", v)
     }
+}
+
+// Apple "Crayons" palette colors (approximate hex) used at 50% opacity for the
+// Import / Export / Stop button tints, matching the Freeform mockup selections.
+private extension Color {
+    static let crayonMagenta   = Color(red: 1.0, green: 0.251, blue: 1.0)  // #FF40FF "Magenta"
+    static let crayonTangerine = Color(red: 1.0, green: 0.576, blue: 0.0)  // #FF9300 "Tangerine"
+    static let crayonSpring    = Color(red: 0.0, green: 0.976, blue: 0.0)  // #00F900 "Spring"
+    static let crayonTurquoise = Color(red: 0.0, green: 0.992, blue: 1.0)  // #00FDFF "Turquoise"
+}
+
+// Shared font for all parameter captions (knob labels, number-box labels, Greyhole, Synth
+// Mode) so they stay identical in size. macOS caption2 ≈ 10pt; this is that +3.
+private extension Font {
+    static let parameterLabel = Font.system(size: 13)
+    // Numeric value readouts (knob values, spectral cutoff number boxes, Greyhole value).
+    // macOS caption2 ≈ 10pt; this is that +2.
+    static let parameterValueLabel = Font.system(size: 12)
+}
+
+// Forces a button label's SF Symbols white — needed when a bright .borderedProminent tint
+// (Spring / Turquoise) would otherwise auto-pick a black label — while still dimming with
+// the button's disabled state. A plain .foregroundStyle(.white) would override the disabled
+// greying and stay full-opacity; reading \.isEnabled restores that dimming.
+private struct WhiteButtonIcon: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    func body(content: Content) -> some View {
+        content.foregroundStyle(.white.opacity(isEnabled ? 1.0 : 0.3))
+    }
+}
+
+private extension View {
+    func whiteButtonIcon() -> some View { modifier(WhiteButtonIcon()) }
 }
 
 #Preview {

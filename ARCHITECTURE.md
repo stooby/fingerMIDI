@@ -535,15 +535,16 @@ In `AudioEngine.mm`:
   - Onset/needs_init (toggle: 0/1, default: 0)
   - OnsetInput (rotary slider: -77 - 0, default: -22)
   - EnableTraining (toggle: 0/1, default: 0)
-  - SpecFlatCutoff (rotary slider: 0.0 - 1.0, default: 0.1)
-  - SpecCentCutoff (rotary slider: 0 - 5000, default: 2100)
+  - SpecFlatCutoff (horizontal spectral slider w/ live histogram: 0.0 - 1.0, default: 0.1)
+  - SpecCentCutoff (horizontal spectral slider w/ live histogram: 0 - 5000, default: 2100)
   - Input_dB (rotary slider: -77 - 18, default: -6)
   - InputDelaySend_dB (rotary slider: -77 - 18, default: -77)
   - DrumSynthOutput_dB (rotary slider: -77 - 18, default: 0)
   - DrumSynthDelaySend_dB (rotary slider: -77 - 18, default: -77)
   - DelayOutput_dB (rotary slider: -77 - 18, default: 0)
+  - SynthMode (2-state toggle: 0/1, default: 1)
   - GreyholeDelayFX_Controller/GreyholePreset (horizontal slider w/ discrete positions: 0 - 8, default: 0)
-  - GreyholeDelayFX_Controller/GreyholePreset (push button (fixed output): 9) #randomizes GreyholePreset
+  - GreyholeDelayFX_Controller/GreyholePreset (`dice`-icon push button (fixed output): 9) #randomizes GreyholePreset
 
 
 ---
@@ -585,7 +586,7 @@ In `AudioEngine.mm`, add two separate methods — `-renderOfflineAudioToURL:(NSU
 5. **Audio method**: allocate output float buffers and open an `AVAudioFile` at `url` for writing.
 6. Loop over the full PCM array in blocks: call `process()` feeding PCM as `inputBuffers`, write output frames to the `AVAudioFile` (audio method) or skip writing (MIDI method), and call `drainEvents()` each iteration.
 7. **Audio method**: close the `AVAudioFile`. **MIDI method**: pass the accumulated events to Swift via `-collectAndClearMidiEvents`, then use swift-midi-file to assemble and write a Standard MIDI File to `url`.
-8. In `ContentView.swift`, expose two separate buttons — **Export Audio (Offline)** and **Export MIDI (Offline)** — each presenting its own save panel dialogue and calling the corresponding method.
+8. In `ContentView.swift`, expose two separate buttons — **Export Audio (Offline)** and **Export MIDI (Offline)** — each presenting its own save panel dialogue and calling the corresponding method. *(Now rendered as SF Symbol icon buttons in the main toolbar.)*
 9. Verify using Verification steps 4–5 from the Verification section above.
 
 ---
@@ -632,7 +633,7 @@ See **Audio Waveform Display (Step 13)** in the *Architectural Notes* section fo
 Overlays rectangles representing RNBO onset-detection output on top of the `WaveformView`, allowing users to see how detected MIDI notes align with the audio waveform and adjust Onset parameters accordingly. The RNBO patch outputs exactly two notes — **C1 (note 36, kick)** and **D1 (note 38, snare)** — so no piano-roll y-axis is needed; two fixed horizontal strips with a vertical offset matching their pitch relationship is sufficient.
 
 The overlay is populated from two sources:
-- **Offline analysis** — a full offline render pass triggered by "Analyze Onsets" or "Export MIDI"
+- **Offline analysis** — a full offline render pass triggered by "Analyze" or "Export MIDI"
 - **Real-time capture** — notes are accumulated into the overlay incrementally as the transport plays through the file
 
 #### Visual design
@@ -823,7 +824,7 @@ private func currentOnsetParamSnapshot() -> [String: Float] {
 }
 ```
 
-`onsetParamsDirty` — drives the "Analyze Onsets" button enabled state only. Returns `true` when no offline analysis has run yet for the current file, or when params have drifted from the last offline snapshot:
+`onsetParamsDirty` — drives the "Analyze" button enabled state only. Returns `true` when no offline analysis has run yet for the current file, or when params have drifted from the last offline snapshot:
 
 ```swift
 private var onsetParamsDirty: Bool {
@@ -863,7 +864,7 @@ private var fullRealTimeCoverageAchieved: Bool {
 }
 ```
 
-**File import** — no auto-analysis. The overlay, both snapshots, and the coverage counter are cleared; `onsetParamsDirty` returns `true` (nil snapshot), enabling "Analyze Onsets" immediately:
+**File import** — no auto-analysis. The overlay, both snapshots, and the coverage counter are cleared; `onsetParamsDirty` returns `true` (nil snapshot), enabling "Analyze" immediately:
 
 ```swift
 midiNoteOverlay = []
@@ -886,7 +887,7 @@ if isPlaying {
 }
 ```
 
-**Seek callback** — re-anchors timestamps and clears open notes. Coverage is only reset if full coverage has not yet been achieved: seeking after the whole file has already been processed in real-time is purely navigation and should not re-enable "Analyze Onsets":
+**Seek callback** — re-anchors timestamps and clears open notes. Coverage is only reset if full coverage has not yet been achieved: seeking after the whole file has already been processed in real-time is purely navigation and should not re-enable "Analyze":
 
 ```swift
 engine.setPlayheadPosition(Int64(fraction * Double(engine.totalFrameCount)))
@@ -964,10 +965,10 @@ private func flushOpenRealTimeNotes() {
 
 **`exportMIDIOffline()`** — same snapshot behaviour as `analyzeMIDI`: updates `midiNoteOverlay`, `lastAnalyzedOnsetParams`, and `lastOverlayOnsetParams` from the same event batch at no extra cost.
 
-**"Analyze Onsets" button** — enabled when `onsetParamsDirty` is true (no offline analysis yet, or params have changed), and additionally disabled when `fullRealTimeCoverageAchieved` is true (full file already processed in real-time with current params):
+**"Analyze" button** — enabled when `onsetParamsDirty` is true (no offline analysis yet, or params have changed), and additionally disabled when `fullRealTimeCoverageAchieved` is true (full file already processed in real-time with current params):
 
 ```swift
-Button("Analyze Onsets") { analyzeMIDI() }
+Button("Analyze") { analyzeMIDI() }
     .buttonStyle(.bordered)
     .disabled(!fileLoaded || isPlaying || isExporting || isMIDIAnalyzing
               || !onsetParamsDirty || fullRealTimeCoverageAchieved)
@@ -987,7 +988,7 @@ Button("Analyze Onsets") { analyzeMIDI() }
 | Transport stopped | Open note-ons flushed | `false` | Unchanged | Unchanged |
 | Onset tuning param changed | All notes marked stale | `true` | Reset to 0 | **Enabled** |
 | `Onset/enable` / `Onset/needs_init` toggled | Unchanged | Unchanged | Unchanged | Unchanged |
-| **Analyze Onsets** pressed | Replaced by offline result | `false` | Unchanged | Disabled (up-to-date) |
+| **Analyze** pressed | Replaced by offline result | `false` | Unchanged | Disabled (up-to-date) |
 | **Export MIDI** pressed | Replaced from same event batch | `false` | Unchanged | Disabled (up-to-date) |
 | New file imported | Cleared | — | 0 | **Enabled** (no analysis yet) |
 
@@ -1011,21 +1012,21 @@ Before the first offline analysis, `lastAnalyzedOnsetParams` is `nil`, so `onset
 
 **Fix:** stale marking is driven by a separate `overlayParamsDirty` computed property backed by `lastOverlayOnsetParams`. This snapshot is set to the current params whenever notes are added to the overlay (by `pollRealTimeMidiEvents`, `flushOpenRealTimeNotes`, `analyzeMIDI`, or `exportMIDIOffline`). Because `lastOverlayOnsetParams` reflects the params actually in effect when the overlay was populated, `overlayParamsDirty` starts `false` after notes are drawn and transitions to `true` only when params subsequently change — giving `.onChange` the transition it needs in all cases.
 
-`onsetParamsDirty` is retained unchanged and continues to drive only the "Analyze Onsets" button enabled state via `lastAnalyzedOnsetParams` (offline-analysis-only snapshot).
+`onsetParamsDirty` is retained unchanged and continues to drive only the "Analyze" button enabled state via `lastAnalyzedOnsetParams` (offline-analysis-only snapshot).
 
 #### Verification
 
-1. Import audio file → "Analyze Onsets" button is immediately enabled; waveform overlay is empty.
-2. Press **Analyze Onsets** → offline analysis runs; orange (C1 kick) and cyan (D1 snare) rectangles appear at correct positions; button disables.
+1. Import audio file → "Analyze" button is immediately enabled; waveform overlay is empty.
+2. Press **Analyze** → offline analysis runs; orange (C1 kick) and cyan (D1 snare) rectangles appear at correct positions; button disables.
 3. Press **Play** → real-time notes accumulate on the waveform as the transport scrolls; notes appear at the correct file-relative positions.
 4. Let transport loop → previously detected real-time notes are replaced in-place on each loop (total count stays stable, not accumulating indefinitely).
-5. Change an onset tuning parameter → all overlay rectangles turn grey/translucent immediately; "Analyze Onsets" re-enables.
+5. Change an onset tuning parameter → all overlay rectangles turn grey/translucent immediately; "Analyze" re-enables.
 6. Resume playback → fresh real-time detections (at the new parameter values) replace stale grey notes as the playhead passes through them.
-7. Press **Analyze Onsets** → entire overlay replaced by fresh offline results; all notes return to full color; button disables.
+7. Press **Analyze** → entire overlay replaced by fresh offline results; all notes return to full color; button disables.
 8. Toggle `Onset/enable` or `Onset/needs_init` → overlay and button state unchanged.
 9. Press **Export MIDI** → exported file and overlay both reflect the same event set; button disables.
 10. Seek by clicking/dragging the waveform → overlay rectangles remain at their file-relative positions; timestamp anchor resets for subsequent real-time capture.
-11. Import a second file → overlay clears; "Analyze Onsets" immediately enables.
+11. Import a second file → overlay clears; "Analyze" immediately enables.
 
 ---
 
@@ -1205,7 +1206,7 @@ Implemented in `AudioEngine.mm` / `.h` (offline path and public API surface unch
    the old one.
 2. Loop the transport across the seek point → post-wrap events stay in `[0, totalMs)` (the `fmod` wrap now
    runs on the audio thread).
-3. Export MIDI on a long dense file → event count still matches `Analyze Onsets` (offline path untouched).
+3. Export MIDI on a long dense file → event count still matches `Analyze` (offline path untouched).
 
 #### Known residual (addressed by Step 14.35)
 Under **pathological** rapid seeking, a few spurious / slightly-early blocks can still appear in the **live
@@ -1262,7 +1263,7 @@ separate `kSeekSettleMs` constant — the settle duration *is* `kRnboProcessingL
 #### Trade-off
 Essentially none: `window = latency` keeps all real post-seek onsets. At most, because the RNBO-time check
 uses the block-start time, a real onset landing within ~one render block of the window's edge could be missed
-**in the live overlay only**; the offline `Analyze Onsets` / `Export MIDI` path is unaffected and still
+**in the live overlay only**; the offline `Analyze` / `Export MIDI` path is unaffected and still
 captures everything. Negligible at a manual seek point.
 
 #### Verification
@@ -1270,7 +1271,7 @@ captures everything. Negligible at a manual seek point.
    the new playhead no longer appear.
 2. Seek to a quiet region, then let onsets play a beat later → they still appear (no over-suppression).
 3. Play without seeking → overlay unchanged (settle only arms on `-setPlayheadPosition`).
-4. Export MIDI → event count still matches `Analyze Onsets` (offline path untouched).
+4. Export MIDI → event count still matches `Analyze` (offline path untouched).
 
 ---
 
@@ -1284,7 +1285,7 @@ values through outport message objects; until now the host listened to none of t
 the user place each cutoff exactly where kick vs. snare values cluster.
 
 New views live in their own `HorizontalSliderView.swift`, inserted into `ContentView` between
-`transportControls` and `parametersPanel` (the same inclusion pattern as `WaveformView`).
+`mainToolbar` and `parametersPanel` (the same inclusion pattern as `WaveformView`).
 
 #### Visual design
 
@@ -1411,7 +1412,7 @@ thread. A third `EventHandler` interface is still added (one subclass per event 
   `_midiCapture` / `_paramCapture` drains (draining during offline, with delivery disabled, keeps RNBO's
   event queue from backing up).
 - **Live-playback only:** `_messageCapture`'s `_deliveryEnabled` is bracketed false/true around offline
-  renders (in `-stopForOfflineRender` / `-resumeAfterOfflineRender`), so `Analyze Onsets` / `Export MIDI`
+  renders (in `-stopForOfflineRender` / `-resumeAfterOfflineRender`), so `Analyze` / `Export MIDI`
   do not populate the histogram. In addition, `_messageCapture.resetRing()` is called in
   `-stopForOfflineRender` (after `[_engine stop]`, so no producer races it) and in
   `-resumeAfterOfflineRender` (before the engine restarts), discarding any real-time-phase samples still
@@ -1462,7 +1463,7 @@ New file, auto-included by the Xcode file-system-synchronized root group (no `pr
 
 #### ContentView changes
 
-- Insert `SpectralSlidersView(store: store)` between `transportControls.padding()` and the
+- Insert `SpectralSlidersView(store: store)` between `mainToolbar.padding()` and the
   `parametersPanel` block.
 - **Pull spectral events on the existing playback-gated 15 fps timer.** The `.onReceive(Timer.publish…)`
   that already calls `pollRealTimeMidiEvents()` under `guard isPlaying` also calls `store.pollSpectralEvents()`.
@@ -1471,7 +1472,7 @@ New file, auto-included by the Xcode file-system-synchronized root group (no `pr
   This keeps the audio→UI handoff a main-thread pull — identical to the real-time MIDI overlay, no callback
   from the audio thread.
 - Give the `SpecCentCutoff` / `SpecFlatCutoff` specs a new `ControlType` (`.spectralSlider`) so they drop
-  out of the rotary `LazyVGrid` (built from `indexedParams(ofType: .rotary)`) — the sliders replace the
+  out of the single-row rotary layout — the sliders replace the
   knobs entirely, while the store still tracks their values and engine-feedback exactly as before.
 
 #### Verification
@@ -1485,7 +1486,7 @@ New file, auto-included by the Xcode file-system-synchronized root group (no `pr
 3. Click/drag a slider (click-to-position) or edit its number box → cutoff updates both ways and clamps
    to `axisMax` (dragging to the far right pins it at `axisMax` without zooming the axis out); double-click
    = reset. `SpecCentCutoff` / `SpecFlatCutoff` no longer appear as rotary knobs.
-4. Run **Analyze Onsets** / **Export MIDI** → histogram does not populate from the offline pass, and
+4. Run **Analyze** / **Export MIDI** → histogram does not populate from the offline pass, and
    trained cutoff values still mirror into the sliders.
 5. Import a second file → histogram clears and axis maxes reset to defaults.
 
@@ -1673,13 +1674,13 @@ Each UI control has been introduced incrementally alongside the step that implem
 
 | Control | Added in | Purpose |
 |---|---|---|
-| **Play / Stop** toggle | Step 6 | Start and stop real-time playback |
-| **File Import** button | Step 7 | Import audio file (Workflows 1a/1b) |
-| Parameter sliders | Step 8 | One per exposed RNBO parameter |
+| **Play / Stop** icon button (`play.fill` / `stop.fill`) | Step 6 | Start and stop real-time playback |
+| **Import** icon button (`square.and.arrow.down`+`waveform`) | Step 7 | Import audio file (Workflows 1a/1b) |
+| Parameter controls (knobs / sliders / radio / toggles / number boxes) | Step 8 | One per exposed RNBO parameter |
 | **Record / Stop** toggle | Step 9 | Start and stop live input recording (Workflows 2a/2b) |
 | **Monitoring** toggle | Step 9 | Enable/disable RNBO bypass parameter (Workflow 2b) |
-| **Export Audio (Offline)** button | Step 11 | Offline audio render → save panel |
-| **Export MIDI (Offline)** button | Step 11 | Offline MIDI render → save panel |
+| **Export Audio (Offline)** icon button (`square.and.arrow.up`+`waveform`) | Step 11 | Offline audio render → save panel |
+| **Export MIDI (Offline)** icon button (`square.and.arrow.up`+`music.quarternote.3`) | Step 11 | Offline MIDI render → save panel |
 | **Record Audio (Real-time)** toggle | Step 12 | Real-time audio capture → save panel |
 | **Record MIDI (Real-time)** toggle | Step 12 | Real-time MIDI capture → save panel |
 
@@ -1768,7 +1769,7 @@ A dictionary keyed by the exact RNBO parameter ID string. Only parameters presen
 - `label: String` — human-readable display name
 - `controlType: ControlType` — one of `.toggle`, `.rotary`, `.discrete`, `.numberInput`
 - `order: Int` — display sort position, independent of RNBO's internal parameter index order
-- `hasRandomize: Bool` — whether a Randomize button appears below the control (currently only `GreyholeDelayFX_Controller/GreyholePreset`)
+- `hasRandomize: Bool` — whether a `dice`-icon Randomize button appears beside the control (currently only `GreyholeDelayFX_Controller/GreyholePreset`)
 - `initialOverride: Float?` — optional host default that overrides the RNBO patch's `assign_defaults` value in the UI display (and in `pushAllValuesToEngine()` if the user never touches the control). Used when the patch default is unsuitable for the target use case. `nil` means use the RNBO `initialValue` as-is.
 
 **To add a new parameter to the UI**, add a single entry to `specs` with its exact RNBO parameter ID and the appropriate `controlType`. No other code changes are required.
@@ -1789,10 +1790,10 @@ Built once at init by combining the whitelist metadata with RNBO-queried values.
 
 | `ControlType` | SwiftUI control | Notes |
 |---|---|---|
-| `.toggle` | `Button` (bordered, tinted when on) | Flips between `0.0` and `1.0`; icon shows `checkmark.circle.fill` / `circle` |
-| `.rotary` | `RotarySlider` (pure SwiftUI `View` using `Canvas` + `DragGesture`) | 4-column `LazyVGrid`; label and current value displayed below the knob; arc sweeps 270° from ~7:30 (min) to ~4:30 (max); vertical drag changes value (Shift = 10× finer); double-click resets to `initialOverride ?? defaultValue` |
-| `.discrete` | SwiftUI `Slider(step: 1)` | Optional `Randomize` button (`Param.hasRandomize`); sends a fixed trigger value (`9`) directly via `setParameter` without updating `values[]` |
-| `.numberInput` | `NumberInputCell` — text field + label | Displayed in the same `HStack` row as toggle buttons, right of a `Divider`; commits on Return or focus loss; clamps to `param.min…param.max` |
+| `.toggle` | `Button` (bordered, tinted when on) | Flips between `0.0` and `1.0`; hand-placed in `mainToolbar` with per-toggle icons — Onset Enable = `power`, Onset Needs Init = `x.circle.fill` — while Enable Training renders as a "Train" text button |
+| `.rotary` | `RotarySlider` (pure SwiftUI `View` using `Canvas` + `DragGesture`) | Single horizontal row in `parametersPanel`: Onset Input pinned in a leading column set off by a `Divider()`, the other five distributed with equal `Spacer()`s; label and current value displayed below the knob; arc sweeps 270° from ~7:30 (min) to ~4:30 (max); vertical drag changes value (Shift = 10× finer); double-click resets to `initialOverride ?? defaultValue` |
+| `.discrete` | Hand-placed per param | Synth Mode renders as a 2-state icon radio (`waveform.circle.fill` = 1 / `hockey.puck` = 0); Greyhole Preset renders as a `Slider(step: 1)` with a `dice`-icon Randomize button (`Param.hasRandomize`) that sends a fixed trigger value (`9`) directly via `setParameter` without updating `values[]` |
+| `.numberInput` | `NumberInputCell` — text field + label | Displayed in `mainToolbar` in the same row as the onset toggle icons and the Analyze button (no divider); commits on Return or focus loss; clamps to `param.min…param.max` |
 
 `RotarySlider` is platform-agnostic (no `NSViewRepresentable`/`UIViewRepresentable`) and works unchanged on macOS and iOS. Drag sensitivity is `150 px / full range`; holding Shift multiplies that by 10×. The `#if os(macOS)` block inside `dragGesture` reads `NSEvent.modifierFlags` for the Shift check; on iOS the fine flag is always `false`.
 
@@ -2395,9 +2396,9 @@ DispatchQueue.global(qos: .userInitiated).async {
 
 Fixed bin count of **2048** — always ≥ typical macOS window widths, giving at least one bin per display pixel.
 
-`body` restructured into three layers: title (`Text`) with `.padding([.top, .leading, .trailing]).padding(.bottom, 10)`, then edge-to-edge waveform wrapped in `TimelineView(.periodic(from: .now, by: 1.0/30.0))` at `.frame(height: 150)`, then `transportControls.padding()`.
+`body` restructured into three layers: title (`Text`) with `.padding([.top, .leading, .trailing]).padding(.bottom, 10)`, then edge-to-edge waveform wrapped in `TimelineView(.periodic(from: .now, by: 1.0/30.0))` at `.frame(height: 150)`, then `mainToolbar.padding()`.
 
-`transportPanel` renamed to `transportControls` with `Text("PercTranscriber")` removed from it (title now lives above the waveform in `body`).
+`transportPanel` renamed to `transportControls` with `Text("PercTranscriber")` removed from it (title now lives above the waveform in `body`). *(Later renamed `mainToolbar` and expanded to also hold the onset toggles, onset number boxes, and the Analyze button — see the Control Types table and the redesign notes.)*
 
 `TimelineView` runs always — not gated on `isPlaying`. Since `engine.playheadFraction` is a lock-free atomic read and `Canvas` is GPU-accelerated, cost at 30 fps is negligible (< 0.1% CPU). Running always avoids SwiftUI view-identity flicker on play/stop transitions.
 
