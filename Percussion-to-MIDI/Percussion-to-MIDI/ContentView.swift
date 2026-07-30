@@ -593,16 +593,8 @@ struct ContentView: View {
             store.clearSpectral()
         }
         #if os(macOS)
-        .onAppear {
-            // No UI element should be auto-focused on launch. macOS makes the first text
-            // field (the SpecCentCutoff number box) the window's initial first responder,
-            // which selects/highlights its text and swallows linked-value updates. Clear
-            // the first responder once the window is up so nothing starts focused.
-            DispatchQueue.main.async {
-                let window = NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow
-                window?.makeFirstResponder(nil)
-            }
-        }
+        // Clear the window's first responder so no text field is auto-focused on launch.
+        .background(InitialFocusClearer())
         #endif
     }
 
@@ -1207,6 +1199,23 @@ struct ContentView: View {
         return String(format: "%.2f", v)
     }
 }
+
+#if os(macOS)
+// Clears the window's first responder the moment it attaches, so macOS doesn't
+// auto-focus the first text field on launch.
+private struct InitialFocusClearer: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { ClearingView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class ClearingView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.initialFirstResponder = nil
+            window?.makeFirstResponder(nil)
+        }
+    }
+}
+#endif
 
 // Apple "Crayons" palette colors (approximate hex) used at 50% opacity for the
 // Import / Export / Stop button tints, matching the Freeform mockup selections.
