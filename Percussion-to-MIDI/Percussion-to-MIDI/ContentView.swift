@@ -5,6 +5,7 @@
 //  Created by Scott Tooby on 5/22/26.
 //
 
+import AVFoundation
 import Combine
 import SwiftUI
 import UniformTypeIdentifiers
@@ -410,6 +411,8 @@ struct InputValueField: View {
 struct ContentView: View {
     @State private var store = ParameterStore()
     @State private var isPlaying = false
+    @State private var isRecording = false
+    @State private var showMicDeniedAlert = false
     @State private var isExporting = false
     @State private var isMIDIAnalyzing = false
     @State private var showFilePicker = false
@@ -510,10 +513,16 @@ struct ContentView: View {
             .padding(.bottom, 5)
 
             TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+                let recElapsed = isRecording ? engine.recordingElapsedMs : 0
+                let recThumb: WaveformThumbnail? = isRecording
+                    ? engine.recordingWaveformBins.flatMap { WaveformThumbnail(data: $0) }
+                    : nil
                 WaveformView(
                     thumbnail: waveformThumbnail,
                     playheadFraction: engine.playheadFraction,
                     onSeek: { fraction in
+                        // No seeking while recording — the playhead tracks elapsed time.
+                        guard !isRecording else { return }
                         engine.setPlayheadPosition(
                             Int64(fraction * Double(engine.totalFrameCount))
                         )
@@ -528,7 +537,10 @@ struct ContentView: View {
                     },
                     midiNotes: midiNoteOverlay,
                     totalDurationMs: totalDurationMs,
-                    midiLatencyCompensationMs: engine.processingLatencyMs
+                    midiLatencyCompensationMs: engine.processingLatencyMs,
+                    isRecording: isRecording,
+                    recordingThumbnail: recThumb,
+                    recordingPlayheadFraction: recElapsed.truncatingRemainder(dividingBy: 60_000) / 60_000
                 )
             }
             .frame(height: 150)
@@ -573,24 +585,13 @@ struct ContentView: View {
             allowsMultipleSelection: false
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
-            let accessed = url.startAccessingSecurityScopedResource()
-            engine.loadAudioFile(from: url)
-            if accessed { url.stopAccessingSecurityScopedResource() }
-            loadedFileName = url.lastPathComponent
-            let eng = engine
-            DispatchQueue.global(qos: .userInitiated).async {
-                guard let data = eng.waveformThumbnailData(binCount: 2048) else { return }
-                let thumb = WaveformThumbnail(data: data)
-                DispatchQueue.main.async { waveformThumbnail = thumb }
-            }
-            // Reset overlay, all snapshots, and coverage so the button enables and stale notes don't linger.
-            midiNoteOverlay = []
-            lastAnalyzedOnsetParams = nil
-            lastOverlayOnsetParams = nil
-            openRealTimeNoteOns.removeAll()
-            realTimeCoverageMs = 0
-            // Clear the spectral histograms and reset their display axes for the new file.
-            store.clearSpectral()
+            loadFile(url: url, securityScoped: true)
+        }
+        .alert("Microphone Access Needed", isPresented: $showMicDeniedAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Enable microphone access for PercTranscriber in System Settings → "
+                 + "Privacy & Security → Microphone to record live input.")
         }
         #if os(macOS)
         // Clear the window's first responder so no text field is auto-focused on launch.
@@ -623,7 +624,7 @@ struct ContentView: View {
                 }
                 Button("Analyze") { analyzeMIDI() }
                     .buttonStyle(.bordered)
-                    .disabled(!fileLoaded || isPlaying || isExporting || isMIDIAnalyzing || !onsetParamsDirty || fullRealTimeCoverageAchieved)
+                    .disabled(!fileLoaded || isPlaying || isRecording || isExporting || isMIDIAnalyzing || !onsetParamsDirty || fullRealTimeCoverageAchieved)
 
                 // Onset tuning number boxes (Thresh / Relax / Floor / Min Gap / Med Span)
                 ForEach(indexedParams(ofType: .numberInput), id: \.0) { i, param in
@@ -635,31 +636,48 @@ struct ContentView: View {
 
             Spacer()
 
-            // Transport (record button intentionally omitted — no capture backend yet).
+            // Transport: playhead position, rewind, play/stop, record.
             HStack(spacing: 8) {
+                // Playhead position (playback) / elapsed time (recording, in red).
+                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+                    let ms = isRecording ? engine.recordingElapsedMs
+                                         : engine.playheadFraction * totalDurationMs
+                    Text(formatTime(ms))
+                        .font(.system(size: 15, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(isRecording ? Color.red : Color.primary)
+                        .frame(minWidth: 86, alignment: .trailing)
+                }
+
                 Button { engine.rewindToStart() } label: {
                     Image(systemName: "backward.end.fill")
                 }
                 .buttonStyle(.bordered)
-                .disabled(!fileLoaded)
+                .disabled(!fileLoaded || isRecording)
 
+                // Play / Stop. While recording, this is a Stop that ends the take.
                 Button {
-                    if isPlaying {
+                    if isRecording {
+                        stopRecordingAction()
+                    } else if isPlaying {
                         engine.stop()
                         flushOpenRealTimeNotes()
+                        isPlaying = false
                     } else {
                         engine.beginRealTimeCapture()
                         engine.start()
                         store.pushAllValuesToEngine()
+                        isPlaying = true
                     }
-                    isPlaying.toggle()
                 } label: {
-                    Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                    Image(systemName: (isPlaying || isRecording) ? "stop.fill" : "play.fill")
                         .whiteButtonIcon()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(isPlaying ? Color.crayonTurquoise.opacity(0.5) : .accentColor)
-                .disabled(!fileLoaded)
+                .tint((isPlaying || isRecording) ? Color.crayonTurquoise.opacity(0.5) : .accentColor)
+                .disabled(!fileLoaded && !isRecording)
+
+                recordButton
             }
 
             Spacer()
@@ -675,6 +693,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color.crayonMagenta.opacity(0.25))
+                .disabled(isRecording)
 
                 HStack(spacing: 8) {
                     Button { exportAudioOffline() } label: {
@@ -696,7 +715,7 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Color.crayonSpring.opacity(0.25))
                 }
-                .disabled(!fileLoaded || isExporting || isMIDIAnalyzing)
+                .disabled(!fileLoaded || isRecording || isExporting || isMIDIAnalyzing)
                 .overlay {
                     if isExporting || isMIDIAnalyzing {
                         HStack(spacing: 6) {
@@ -709,6 +728,101 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    // MARK: Recording (Step 9)
+
+    @ViewBuilder
+    private var recordButton: some View {
+        if isRecording {
+            // Active: red background, white filled circle.
+            Button { toggleRecording() } label: {
+                Image(systemName: "circle.fill").whiteButtonIcon()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+        } else {
+            // Idle: bordered button with a red filled circle.
+            Button { toggleRecording() } label: {
+                Image(systemName: "circle.fill").foregroundStyle(.red)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isPlaying || isExporting || isMIDIAnalyzing)
+        }
+    }
+
+    private func toggleRecording() {
+        if isRecording { stopRecordingAction() } else { startRecordingAction() }
+    }
+
+    private func startRecordingAction() {
+        requestMicAccess { granted in
+            guard granted else { showMicDeniedAlert = true; return }
+            // Stop file playback so RNBO is fed silence during the take (no monitoring).
+            if isPlaying {
+                engine.stop()
+                flushOpenRealTimeNotes()
+                isPlaying = false
+            }
+            engine.startRecording(to: tempRecordingURL())
+            isRecording = true
+        }
+    }
+
+    private func stopRecordingAction() {
+        let url = engine.stopRecording()
+        isRecording = false
+        // Hand the recording off to the file-playback pipeline (Workflow 2b → 1a/1b).
+        if let url { loadFile(url: url) }
+    }
+
+    // Requests microphone permission, invoking `completion` on the main thread.
+    private func requestMicAccess(_ completion: @escaping (Bool) -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            completion(true)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async { completion(granted) }
+            }
+        default:
+            completion(false)
+        }
+    }
+
+    private func tempRecordingURL() -> URL {
+        let name = "PercTranscriber-Recording-\(Int(Date().timeIntervalSince1970)).caf"
+        return FileManager.default.temporaryDirectory.appendingPathComponent(name)
+    }
+
+    // MM:SS.MMM for the playhead-position display.
+    private func formatTime(_ ms: Double) -> String {
+        let total = Int(max(0, ms).rounded())
+        return String(format: "%02d:%02d.%03d", total / 60_000, (total / 1_000) % 60, total % 1_000)
+    }
+
+    // Shared post-load routine for both file import and record-stop: loads `url` into
+    // the host PCM array, regenerates the waveform thumbnail on a background thread, and
+    // resets all per-file overlay / analysis / spectral state.
+    private func loadFile(url: URL, securityScoped: Bool = false) {
+        let accessed = securityScoped && url.startAccessingSecurityScopedResource()
+        engine.loadAudioFile(from: url)
+        if accessed { url.stopAccessingSecurityScopedResource() }
+        loadedFileName = url.lastPathComponent
+        let eng = engine
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let data = eng.waveformThumbnailData(binCount: 2048) else { return }
+            let thumb = WaveformThumbnail(data: data)
+            DispatchQueue.main.async { waveformThumbnail = thumb }
+        }
+        // Reset overlay, all snapshots, and coverage so the button enables and stale notes don't linger.
+        midiNoteOverlay = []
+        lastAnalyzedOnsetParams = nil
+        lastOverlayOnsetParams = nil
+        openRealTimeNoteOns.removeAll()
+        realTimeCoverageMs = 0
+        // Clear the spectral histograms and reset their display axes for the new file.
+        store.clearSpectral()
     }
 
     // MARK: Real-Time MIDI Overlay

@@ -62,7 +62,7 @@ ObjC++ Wrapper (.mm)
     ├── RNBO CoreObject (DSP)
     ├── Host-side PCM float array (decoded audio file, owned by ObjC++ wrapper)
     ├── Playhead for streaming PCM through process() inputBuffers
-    ├── Lock-free ring buffer (live input bridging, Workflows 2a/2b)
+    ├── Lock-free ring buffer (live input monitoring — Workflow 2a / Step 9.5 only)
     └── EventHandler subclass for MIDI event capture
 AVFoundation (audio file decode/encode, in ObjC++ or Swift)
 swift-midi-core + swift-midi-file packages (MIDI file export)
@@ -85,7 +85,7 @@ ObjC++ Wrapper (.mm)
     ├── AVAudioEngine + AVAudioSourceNode (real-time I/O)
     ├── RNBO CoreObject (DSP)
     ├── setExternalData() for audio file → audioInput buffer~ injection
-    ├── Lock-free ring buffer (live input bridging, Workflows 2a/2b)
+    ├── Lock-free ring buffer (live input monitoring — Workflow 2a / Step 9.5 only)
     └── EventHandler subclass for MIDI event capture
 AVFoundation (audio file decode/encode, in ObjC++ or Swift)
 swift-midi-core + swift-midi-file packages (MIDI file export)
@@ -167,15 +167,15 @@ All workflows converge after the input stage — audio held as a host-side PCM a
 2. Same as Workflow 1a step 2
 3. Real-time export: ObjC++ wrapper simultaneously captures `process()` output to AVAudioFile and accumulates MidiEvents from EventHandler during the live session → AVAudioFile / swift-midi-file
 
-**Workflow 2a: Record live input → monitor real-time processing → offline or real-time export**
-1. Live audio input: inputNode tap → Branch A: raw recording to AVAudioFile (unprocessed); Branch B: ring buffer → AVAudioSourceNode render block feeds live samples as RNBO `process()` `inputBuffers`; user hears processed output and can adjust parameters in real time
+**Workflow 2b: Record live input → (no real-time monitoring) → offline or real-time export** *(Step 9)*
+1. Live audio input: inputNode tap → **Branch A only**: raw recording to AVAudioFile (unprocessed). No ring buffer and no live input to RNBO — the transport is in its stopped/silent state, so the render block feeds RNBO silence (the always-alive engine keeps `process()` running so any effects tail from prior playback rings out, but its output is not the live input). "No monitoring" is a property of the input source (silence vs. live samples), not a bypass parameter.
 2. Recording stops → raw AVAudioFile finalized on disk
 3. Decode recorded file → host-side PCM float array → from here identical to Workflow 1a step 3 (offline) or Workflow 1b step 3 (real-time)
 
-**Workflow 2b: Record live input → (no real-time monitoring) → offline or real-time export**
-1. Same wiring as Workflow 2a — inputNode tap → Branch A: raw recording to AVAudioFile; Branch B: ring buffer → AVAudioSourceNode → RNBO `process()`. Absence of monitoring is achieved by setting a bypass parameter in the RNBO patch to disabled: `process()` still runs each block but produces silence. No audio graph reconfiguration needed; monitoring can be toggled on/off at any time via parameter.
+**Workflow 2a: Record live input → monitor real-time processing → offline or real-time export** *(Step 9.5)*
+1. Live audio input: inputNode tap → Branch A: raw recording to AVAudioFile (unprocessed); **Branch B**: ring buffer → AVAudioSourceNode render block feeds live samples as RNBO `process()` `inputBuffers`; user hears processed output and can adjust parameters in real time
 2. Recording stops → raw AVAudioFile finalized on disk
-3. Re-enable RNBO DSP parameter; decode recorded file → host-side PCM float array → from here identical to Workflow 1a step 3 (offline) or Workflow 1b step 3 (real-time)
+3. Decode recorded file → host-side PCM float array → from here identical to Workflow 1a step 3 (offline) or Workflow 1b step 3 (real-time)
 
 #### Phase 1 (RNBO patch w/ internal `audioInput` buffer~)
 
@@ -191,17 +191,17 @@ All workflows converge after the input stage — audio loaded into RNBO's `audio
 2. Same as Phase 1 Workflow 1a step 2
 3. Real-time export: simultaneously capture `process()` output to AVAudioFile and accumulate MidiEvents from EventHandler during the live session
 
-**Workflow 2a: Record live input → monitor real-time processing → offline or real-time export**
-1. Live audio input: inputNode tap → Branch A: raw recording to AVAudioFile; Branch B: ring buffer → AVAudioSourceNode → RNBO `process()` `inputBuffers`; user hears processed output and can adjust parameters in real time
+**Workflow 2b: Record live input → (no real-time monitoring) → offline or real-time export** *(Step 9)*
+1. Live audio input: inputNode tap → **Branch A only**: raw recording to AVAudioFile. No ring buffer and no live input to RNBO — the transport is stopped, so the render block feeds RNBO silence (tails ring out; output is not the live input). "No monitoring" is a property of the input source, not a bypass parameter.
 2. Recording stops → raw AVAudioFile finalized on disk
 3. Decode recorded file → `setExternalData("audioInput")` → from here identical to Phase 1 Workflow 1a step 3 (offline) or Workflow 1b step 3 (real-time)
 
-**Workflow 2b: Record live input → (no real-time monitoring) → offline or real-time export**
-1. Same wiring as Phase 1 Workflow 2a; monitoring disabled via RNBO bypass parameter → `process()` runs but produces silence
+**Workflow 2a: Record live input → monitor real-time processing → offline or real-time export** *(Step 9.5)*
+1. Live audio input: inputNode tap → Branch A: raw recording to AVAudioFile; **Branch B**: ring buffer → AVAudioSourceNode → RNBO `process()` `inputBuffers`; user hears processed output and can adjust parameters in real time
 2. Recording stops → raw AVAudioFile finalized on disk
-3. Re-enable RNBO DSP parameter; decode recorded file → `setExternalData("audioInput")` → from here identical to Phase 1 Workflow 1a step 3 (offline) or Workflow 1b step 3 (real-time)
+3. Decode recorded file → `setExternalData("audioInput")` → from here identical to Phase 1 Workflow 1a step 3 (offline) or Workflow 1b step 3 (real-time)
 
-**RNBO patch design note (Phase 1):** The patch must handle two input modes — live streaming via `in~` inlets (Workflows 2a/2b during recording) and buffer~-based playback (Workflows 1a/1b and post-recording 2a/2b). Design the patch with this dual-source routing in mind.
+**RNBO patch design note (Phase 1):** The patch must handle two input modes — live streaming via `in~` inlets (Workflow 2a monitored recording only) and buffer~-based playback (Workflows 1a/1b, post-recording 2a/2b, and Workflow 2b during recording, when RNBO is fed silence). Design the patch with this dual-source routing in mind.
 
 ---
 
@@ -232,7 +232,13 @@ Also the final step of Phase 1 Workflows 2a and 2b after live recording finishes
 ### Live Audio Input (Workflows 2a/2b — both phases)
 ```
 AVAudioEngine inputNode receives audio from mic / audio interface
-    Branch A — raw recording: inputNode tap → AVAudioFile writer (unprocessed, to disk)
+
+    Workflow 2b (no monitoring — Step 9):
+    Branch A only — raw recording: inputNode tap → AVAudioFile writer (unprocessed, to disk)
+        → RNBO render block is fed SILENCE (transport stopped); process() keeps running so
+          effects tails ring out, but RNBO's output is not the live input
+
+    Workflow 2a (monitoring — Step 9.5): Branch A, plus
     Branch B — real-time monitoring: inputNode tap → lock-free ring buffer
         → AVAudioSourceNode render block reads ring buffer → RNBO process() inputBuffers
         → RNBO processes live input → output to AVAudioEngine output
@@ -243,9 +249,9 @@ AVAudioEngine inputNode receives audio from mic / audio interface
     Phase 1: Decode file → setExternalData("audioInput") on CoreObject → Workflows 2a/2b now identical to Workflows 1a/1b
 ```
 
-**Threading note:** The `inputNode` tap and `AVAudioSourceNode` render block run on separate audio threads. Since `CoreObject` is single-threaded, a lock-free ring buffer in the ObjC++ wrapper bridges them — the tap writes input samples; the render block reads and passes them to `process()` as `inputBuffers`. This is a standard real-time audio pattern and requires no new technologies, but is an explicit implementation detail in the ObjC++ wrapper.
+**Threading note (Workflow 2a monitoring — Step 9.5 only):** The `inputNode` tap and `AVAudioSourceNode` render block run on separate audio threads. Since `CoreObject` is single-threaded, a lock-free ring buffer in the ObjC++ wrapper bridges them for monitored recording — the tap writes input samples; the render block reads and passes them to `process()` as `inputBuffers`. This is a standard real-time audio pattern and requires no new technologies, but is an explicit implementation detail in the ObjC++ wrapper. **Step 9 (Workflow 2b) has no such bridge** — it uses only the Branch A tap → AVAudioFile writer.
 
-**Workflow 2b note:** Branch B wiring is identical for Workflow 2b (no monitoring) — the ring buffer and `AVAudioSourceNode` path remain fully connected. A bypass parameter in the RNBO patch disables DSP output so `process()` still runs each block but produces silence. No audio graph reconfiguration required; monitoring can be toggled on/off at any time by changing the parameter.
+**Workflow 2b note (no monitoring — Step 9):** Branch B is absent entirely; only Branch A runs. The render block feeds RNBO silence because the transport is in its stopped state (the always-alive engine keeps `process()` running so effects tails ring out, but its output is not the live input). "No monitoring" is achieved by the input source, **not** by a patch bypass parameter — none is required or used. In Step 9.5, monitoring is toggled by switching the render block's input source between the ring buffer (monitor) and silence (no monitor), again with no bypass parameter.
 
 ### Audio File Export
 
@@ -349,7 +355,7 @@ Adding JUCE to the standalone app now for "future-proofing" buys little — the 
 **Phase 0 MVP — streaming I/O patch, no internal buffer~:**
 
 *Setup:*
-1. Export current RNBO patch (stereo `in~` / `out~`, MIDI output, bypass parameter) to C++ target
+1. Export current RNBO patch (stereo `in~` / `out~`, MIDI output) to C++ target
 2. Build Xcode project: SwiftUI app, ObjC++ wrapper `.mm`, RNBO C++ sources
 
 *Workflow 1a — Import file → real-time processing & playback → offline export:*
@@ -360,13 +366,13 @@ Adding JUCE to the standalone app now for "future-proofing" buys little — the 
 *Workflow 1b — Import file → real-time processing & playback → real-time export:*
 6. During real-time playback (step 3), simultaneously write `process()` output to AVAudioFile and accumulate MidiEvents → confirm both output files produced correctly
 
-*Workflow 2a — Record live input → monitor real-time processing → offline export:*
-7. Tap `AVAudioEngine.inputNode` → confirm simultaneous raw write to AVAudioFile (Branch A) and ring buffer delivery to RNBO `process()` inputBuffers with audible processed output (Branch B)
-8. After recording stops, decode written file → host PCM array → confirm offline export (step 4) produces consistent output
+*Workflow 2b (Step 9) — Record live input → no monitoring → offline export:*
+7. Grant mic permission; press Record → confirm raw input is written to the temp AVAudioFile (Branch A) while RNBO is fed silence (no live-input monitoring) and any prior effects tail rings out; confirm the live red 60 s waveform scrolls and the `MM:SS.MMM` position display counts up in red
+8. Press Stop → confirm the recording auto-loads into the host PCM array (playhead reset, thumbnail refreshed) → confirm offline export (step 4) produces consistent output
 
-*Workflow 2b — Record live input → no monitoring → offline export:*
-9. Set RNBO bypass parameter to disabled → confirm `process()` still called each block but output is silent; confirm raw recording to AVAudioFile proceeds normally
-10. Re-enable DSP parameter; decode recorded file → confirm offline export matches Workflow 2a result
+*Workflow 2a (Step 9.5) — Record live input → monitor real-time processing → offline export:*
+9. With monitoring enabled, press Record → confirm simultaneous raw write to AVAudioFile (Branch A) and ring-buffer delivery to RNBO `process()` inputBuffers with audible processed output (Branch B)
+10. Toggle monitoring off mid-record → confirm output falls to silence (render block feeds silence) while Branch A recording continues; after stop, confirm offline export matches the Workflow 2b result
 
 **Phase 1 — RNBO patch w/ internal `audioInput` buffer~ (validate when patch gains buffer~):**
 11. Verify `setExternalData()` import: decode WAV → `setExternalData("audioInput")` → confirm patch reads and plays from buffer~ with null `inputBuffers`
@@ -380,9 +386,8 @@ Adding JUCE to the standalone app now for "future-proofing" buys little — the 
 
 ### Step 1 — Prepare the RNBO Patch (IMPLEMENTED)
 
-1. Add a **bypass parameter** to the patch (e.g. `bypass`, range 0–1, default 0) that gates all DSP output to silence when enabled. This is required for Workflow 2b (no-monitoring recording mode).
-2. Confirm the patch has stereo `in~` and `out~` signal inlets and at least one MIDI output object.
-3. Export the patch to the **C++ target** in RNBO. Note the output folder location — it contains a `rnbo/` subfolder (the RNBO runtime) and a generated patch C++ file.
+1. Confirm the patch has stereo `in~` and `out~` signal inlets and at least one MIDI output object.
+2. Export the patch to the **C++ target** in RNBO. Note the output folder location — it contains a `rnbo/` subfolder (the RNBO runtime) and a generated patch C++ file.
 
 ---
 
@@ -549,18 +554,92 @@ In `AudioEngine.mm`:
 
 ---
 
-### Step 9 — Implement Live Audio Input Recording (Workflows 2a/2b)
+### Step 9 — Live Audio Input Recording *without* Input Monitoring (Workflow 2b)
 
-In `AudioEngine.mm`:
+**Goal:** Record live microphone / interface input straight to disk with **no** live-input monitoring, then hand the recording off to the existing file-playback pipeline (Workflow 1a/1b). No ring buffer and no RNBO `bypass` parameter — "no monitoring" falls out of the always-alive engine's existing stopped-state behavior: the render block already calls `core->process()` every block and already feeds RNBO silence when `_isPlaying == false`, so effects tails ring out naturally. See *Keep `AVAudioEngine` Alive Across Stop/Play Cycles* in the Architectural Notes. (There is currently no `bypass` parameter in the patch or `ParameterStore.specs`; the original Step 1 note about it is superseded — see that step.)
 
-1. Add ivars for an `AVAudioFile` writer, an atomic recording flag, and a lock-free ring buffer (e.g. a circular buffer sized for ~100ms of stereo audio at the session sample rate).
-2. Add `-startRecordingToURL:(NSURL *)url` and `-stopRecording` methods.
-3. In `-startRecordingToURL:`, install a tap on `_engine.inputNode`:
-   - **Branch A**: write each incoming buffer to the `AVAudioFile` writer.
-   - **Branch B**: write each incoming buffer into the ring buffer.
-4. In the `AVAudioSourceNode` render block, read from the ring buffer (when recording is active) and pass to `process()` `inputBuffers` — replacing or supplementing the file-based PCM stream.
-5. In `-stopRecording`, remove the tap and close the `AVAudioFile`. Then call `-loadAudioFileFromURL:` on the just-written file to load it into the host PCM array (Workflows 2a/2b → Workflow 1a/1b handoff).
-6. Expose recording controls to SwiftUI: add a **Record / Stop** toggle button that calls `-startRecordingToURL:` / `-stopRecording`, and a **Monitoring** toggle that enables/disables the RNBO bypass parameter (Workflow 2b — silent pass-through during recording). Verify: confirm audible real-time monitoring output during recording (Workflow 2a) and silent output with the monitoring toggle on (Workflow 2b).
+#### Prerequisites — microphone permission (new; not required by any prior step)
+
+The project uses `GENERATE_INFOPLIST_FILE = YES`, so there is no physical `Info.plist` — the usage string is a build setting. Add all three:
+
+1. **Usage string:** `INFOPLIST_KEY_NSMicrophoneUsageDescription` build setting, e.g. *"PercTranscriber records live audio input for transcription."*
+2. **Sandbox entitlement:** `com.apple.security.device.audio-input` — Xcode → target → Signing & Capabilities → App Sandbox → Hardware → **Audio Input**. (Joins the existing `com.apple.security.files.user-selected.read-write` entitlement.)
+3. **Runtime gate:** before the first record, request access via `AVCaptureDevice.requestAccess(for: .audio)` and proceed only on `true`; on denial, surface a prompt directing the user to enable it in System Settings.
+
+#### `AudioEngine.mm` / `AudioEngine.h`
+
+1. Add ivars: an `AVAudioFile *_recordFile` writer, `std::atomic<bool> _isRecording`, an `NSURL *_recordURL` (the temp file being written), and `std::atomic<int64_t> _recordedFrames` (drives the elapsed-time / recording playhead display).
+2. Add `-startRecordingToURL:(NSURL *)url` and `-(nullable NSURL *)stopRecording`:
+   - `-startRecordingToURL:` — query the input node's format (while the engine is still running), open `_recordFile` for writing at that format, then **stop the engine, install a tap on `_engine.inputNode` (bus 0), and restart it** — the tap cannot be installed on the running engine (see *I/O reconfiguration* below). In the tap block (**Branch A only**): `writeFromBuffer:` the incoming buffer to `_recordFile`; add its frame count to `_recordedFrames`; and fold its min/max into the live waveform bins (below). Set `_isRecording = true`, and force the transport to its stopped/silent state (`_isPlaying = false`) so RNBO receives silence. Do **not** advance the file playhead. If the restart fails, remove the tap and restart output-only so playback is never left broken.
+   - `-stopRecording` — **stop the engine, remove the input tap, restart it output-only**, close `_recordFile` (dropping the last strong reference finalizes the file header on disk), set `_isRecording = false`, and **return** the finalized `_recordURL` (nil on failure). No ring buffer to tear down. The Swift layer loads the returned URL via the shared load path (below).
+3. **No `AVAudioSourceNode` render-block changes.** Step 9 needs none — the existing `!_isPlaying → silence` branch already feeds RNBO silence while recording. (The render-block read from a ring buffer is a Step 9.5 addition.)
+4. **Live recording waveform (60 s scrolling).** The static file thumbnail (`waveformThumbnailDataWithBinCount:`) does not apply while recording — there is no complete host PCM array yet. Instead maintain a fixed-size array of min/max bins for the **current 60-second window** (e.g. 2048 bins ⇒ ~29 ms/bin at 60 s). In the tap block, map the buffer's position (`_recordedFrames` since the window start, at the input sample rate) to bin index(es) and merge its min/max. When elapsed crosses a 60 s boundary, clear the window bins, restart from bin 0, and bump a `windowIndex`. Expose:
+   - `@property (readonly) BOOL isRecording;`
+   - `@property (readonly) double recordingElapsedMs;` — total elapsed since record start (drives the `MM:SS.MMM` display).
+   - `-(nullable NSData *)recordingWaveformBins;` — the current window's min/max `Float32` pairs (same flat layout as `waveformThumbnailData`). `WaveformView` draws these in red only up to the live playhead fraction, so the not-yet-recorded region stays black and each 60 s wrap reads as a blank refill (no separate `windowIndex` needs to be exposed to the Swift side).
+   - Note: `installTapOnBus:` tap blocks tolerate file I/O and light computation (this is the documented recording pattern) — unlike the strictly real-time `AVAudioSourceNode` render block — so **no** lock-free ring is required for Branch A. Guard the bins with a lightweight lock or hand them to the main thread.
+
+> **I/O reconfiguration — the input tap requires a stop/start bracket (implemented).** This was the "known risk" the plan flagged, and it bit exactly as predicted. On macOS, one `AVAudioEngine` instance drives a single shared HAL audio unit for both input and output, so adding an input tap is an I/O-configuration change that must be made while the engine is **stopped**. Installing the tap on the always-alive (output-only) engine silently fails: the tap delivers no buffers, the console throws `-10877` (`kAudioUnitErr_InvalidElement`), and the botched reconfiguration corrupts output so *all* later playback dies until relaunch. The fix brackets both the tap install (`-startRecordingToURL:`) and its removal (`-stopRecording`) with `[_engine stop]` … `[_engine prepare]` / `[_engine startAndReturnError:]` — the same stop/start pattern used for offline render. A failed start is contained to the record action and recovers to output-only playback. A defensive zero-frame guard was also added to `-loadAudioFileFromURL:` so an empty recording fails cleanly instead of a `-50` / `frameCapacity != 0` read error.
+>
+> **Tail tradeoff (accepted).** Stopping the engine to reconfigure I/O cuts any ringing effects tail the instant Record is pressed — the one behavior the "feed RNBO silence" design otherwise preserves. It is audible but subtle, and recording *into* a ringing tail is an edge case, so it is accepted. The only tail-preserving alternative — keeping the input node in the running graph from launch (priming) — was rejected: it acquires the mic at launch and, worse, makes the engine fail to *start* at launch when the default input and output are different devices (below).
+>
+> **Shared-device requirement.** Because input and output share one HAL unit, starting the engine with the tap installed only succeeds when the default input and output resolve to a single device (or an aggregate). If they differ, `-startRecordingToURL:` logs `failed to start engine for recording: …` and recovers output-only (no take). A single engine cannot span two devices; supporting a different default input vs. output would require an aggregate device or a two-engine + ring-buffer bridge (with sample-rate/drift handling). Following default-device *changes* is separately available via `AVAudioEngineConfigurationChangeNotification` (rebuild + restart on notify) — not wired up yet.
+
+#### Handoff on stop (Workflow 2b → Workflow 1a/1b)
+
+`-stopRecording` returns the temp file URL; the Swift layer runs the **same load routine** `.fileImporter` uses. Factor the inline post-import bookkeeping in `ContentView`'s `.fileImporter` (thumbnail regeneration; reset of `midiNoteOverlay`, snapshots, coverage, and spectral histograms; `loadedFileName`) into a shared `loadFile(url:)` helper, then call it from both the importer and `stopRecording`. This makes recorded audio behave exactly like an imported file from that point on.
+
+#### SwiftUI — transport UI (matches the mockups)
+
+1. **Playhead Position display (new), `MM:SS.MMM`,** placed to the left of the rewind (`backward.end.fill`) button:
+   - Not recording: current playhead time = `playheadFraction × totalDurationMs`.
+   - Recording: `engine.recordingElapsedMs`, text tinted **red**.
+2. **Record button**, to the right of the Play/Stop button:
+   - Idle: default `.bordered` button with a red `circle.fill` icon.
+   - Recording (active): `.borderedProminent` with a red tint and a **white** `circle.fill`.
+   - Action: request mic access (first time) → `engine.startRecordingToURL:(tempURL)`.
+3. **Play → Stop swap while recording:** during recording the Play button shows `stop.fill` and its action **stops recording** (`engine.stopRecording()` → shared `loadFile(url:)`). Pressing either the Stop button or the Record toggle ends the take.
+4. **Live red waveform + advancing playhead:** while `engine.isRecording`, `WaveformView` switches to recording mode — stroke `recordingWaveformBins` in **red**, advance the yellow playhead by `(recordingElapsedMs mod 60 000) / 60 000`, and blank + refill on each new `windowIndex`. The existing 30 fps `TimelineView` around `WaveformView` already re-renders; feed it the live bins and the recording playhead fraction instead of the file thumbnail / `playheadFraction`.
+5. **No MIDI overlay during recording.** Because RNBO receives silence in Workflow 2b, no onsets are detected while recording — the note overlay stays empty during the take. Onset detection on the recorded audio happens *after* Stop, once the recording is loaded, via the normal **Analyze** / offline path.
+6. **Mutual exclusion:** disable **Import / Analyze / Export** while recording, and disable **Record** while playing/exporting/analyzing. Recording, playback, and offline render all contend for the single-threaded `CoreObject`, and offline render additionally stops the engine (which would drop the input tap).
+
+#### Verification
+
+1. Grant mic permission on first Record; the deny path shows an "enable in System Settings" prompt and does not start recording.
+2. Press Record → red waveform fills left→right, the yellow playhead advances, the position display counts up in red `MM:SS.MMM`; a delay/reverb tail from prior playback rings out and decays. Confirm you do **not** hear your live input (RNBO is fed silence, not the mic).
+3. Let recording pass 60 s → the waveform blanks and refills from the left; the position display keeps climbing past `01:00.000`.
+4. Press Stop (or the Record toggle) → the take auto-loads: the static blue thumbnail replaces the red waveform, the playhead resets to 0, and the filename updates.
+5. Run **Analyze** / **Export MIDI** on the loaded recording → onsets detect normally, exactly as for an imported file.
+6. Confirm Import/Analyze/Export are disabled during recording, and Record is disabled during playback/export.
+
+---
+
+### Step 9.5 — Live Audio Input Recording *with* Input Monitoring (Workflow 2a)
+
+**Goal:** Everything in Step 9, plus **real-time monitoring** — the user hears their live input processed through RNBO while recording. This is where the lock-free ring buffer (Branch B) and the render-block input read are introduced. Builds directly on Step 9; only the additions are listed.
+
+#### `AudioEngine.mm`
+
+1. **Add the lock-free ring buffer (Branch B).** A single-producer / single-consumer float ring (reuse the SPSC pattern already used by `MidiEventCapture` / `MessageEventCapture`), sized for ~100 ms of stereo audio at the engine sample rate. Producer = the input tap; consumer = the `AVAudioSourceNode` render block.
+2. **Input-format conversion.** The input node's format (sample rate / channel count) may differ from the engine's stereo render format. Convert each tap buffer to stereo @ `_engineSampleRate` (via `AVAudioConverter`, exactly as `-loadAudioFileFromURL:` already does) **before** writing it into the ring. Branch A still writes the raw, unconverted input to `_recordFile`.
+3. **Render-block read (the only render-block change in the whole feature).** When monitoring is active, the render block reads a block of frames from the ring and passes them as RNBO `process()` `inputBuffers` in place of the silence/PCM branch. Ring underrun (empty) → feed silence for that block. This is the one spot that must remain strictly real-time safe (no locks, no allocations) — hence the SPSC ring.
+4. **Monitoring toggle = input source, not a `bypass` parameter.** A `std::atomic<bool> _monitoring` selects the render-block input source: `true` → ring buffer (hear processed live input, Workflow 2a); `false` → silence (the Step 9 / Workflow 2b behavior). No RNBO `bypass` parameter is involved. Expose `-setMonitoringEnabled:` and `@property (readonly) BOOL monitoringEnabled;`.
+
+#### Threading note
+
+The `inputNode` tap and the `AVAudioSourceNode` render block run on separate audio threads; `CoreObject` is single-threaded, so the SPSC ring bridges them — the tap writes converted input samples, the render block reads them for `process()`. This is the standard real-time input-monitoring pattern and is introduced only here (Step 9.5), never in Step 9.
+
+#### SwiftUI
+
+1. **Monitoring toggle** in the transport (e.g. a `headphones` / `speaker.wave.2` icon toggle) → `engine.setMonitoringEnabled(...)`. Default **off**, so Record defaults to the Workflow 2b (no-monitor) behavior; toggling on switches the live take to Workflow 2a.
+2. **MIDI overlay during monitored recording (optional).** With monitoring on, RNBO processes live input and emits onsets, so the existing real-time overlay path (`beginRealTimeCapture` + `collectAndClearRealTimeMidiEvents`, `pollRealTimeMidiEvents` in `ContentView`) *can* populate the overlay live during a take. Recommended: enable it, reusing the existing real-time poller, so monitored input shows detected notes as they happen. (In Step 9 this path is dormant because the input is silent.)
+
+#### Verification
+
+1. Enable monitoring, press Record → you hear your live input processed through RNBO (delay / reverb / synth per current params); adjusting parameters changes the monitored sound in real time.
+2. Toggle monitoring off mid-take → monitored output drops to silence (render block feeds silence) while Branch A recording continues uninterrupted; toggle back on → monitoring resumes.
+3. After Stop, the recorded (raw) file loads and offline export matches the Workflow 2b result — export is from the loaded raw file and is independent of what was monitored.
+4. Confirm no audio dropouts/glitches at record start (ring priming) or under sustained onsets (ring never audibly overflows/underflows).
 
 ---
 
@@ -1677,8 +1756,9 @@ Each UI control has been introduced incrementally alongside the step that implem
 | **Play / Stop** icon button (`play.fill` / `stop.fill`) | Step 6 | Start and stop real-time playback |
 | **Import** icon button (`square.and.arrow.down`+`waveform`) | Step 7 | Import audio file (Workflows 1a/1b) |
 | Parameter controls (knobs / sliders / radio / toggles / number boxes) | Step 8 | One per exposed RNBO parameter |
-| **Record / Stop** toggle | Step 9 | Start and stop live input recording (Workflows 2a/2b) |
-| **Monitoring** toggle | Step 9 | Enable/disable RNBO bypass parameter (Workflow 2b) |
+| **Playhead Position** display (`MM:SS.MMM`) | Step 9 | Playhead time (playback) / elapsed time (recording, shown red) |
+| **Record / Stop** toggle | Step 9 | Start and stop live input recording (Workflow 2b) |
+| **Monitoring** toggle | Step 9.5 | Toggle real-time input monitoring (Workflow 2a) — switches the render-block input between the live ring buffer and silence |
 | **Export Audio (Offline)** icon button (`square.and.arrow.up`+`waveform`) | Step 11 | Offline audio render → save panel |
 | **Export MIDI (Offline)** icon button (`square.and.arrow.up`+`music.quarternote.3`) | Step 11 | Offline MIDI render → save panel |
 | **Record Audio (Real-time)** toggle | Step 12 | Real-time audio capture → save panel |

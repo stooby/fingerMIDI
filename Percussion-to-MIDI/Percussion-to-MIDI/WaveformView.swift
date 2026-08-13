@@ -48,12 +48,29 @@ struct WaveformView: View {
     // value the audio engine's settling window uses.
     var midiLatencyCompensationMs: Double
 
+    // Live-recording mode (Step 9). When `isRecording`, the view draws the red
+    // recording envelope (built from `recordingThumbnail`) up to the live playhead
+    // and ignores the file thumbnail / MIDI overlay. `recordingPlayheadFraction` is
+    // the position within the current 60 s window in [0, 1].
+    var isRecording: Bool = false
+    var recordingThumbnail: WaveformThumbnail? = nil
+    var recordingPlayheadFraction: Double = 0
+
+    // Recording envelope + live playhead colors.
+    private static let recordingWaveColor = Color(red: 1.0, green: 0.23, blue: 0.19)  // system red
+    private static let playheadColor      = Color(red: 1.0, green: 0.85, blue: 0.2)   // yellow
+
     var body: some View {
         GeometryReader { geo in
             Canvas { context, size in
                 // Background
                 context.fill(Path(CGRect(origin: .zero, size: size)),
                              with: .color(.black))
+
+                if isRecording {
+                    drawRecording(context: context, size: size)
+                    return
+                }
 
                 // Waveform
                 if let thumbnail, !thumbnail.bins.isEmpty {
@@ -125,5 +142,31 @@ struct WaveformView: View {
                     }
             )
         }
+    }
+
+    // Live-recording draw pass: red envelope up to the live playhead, blank ahead,
+    // plus the advancing yellow playhead. Bins past the playhead are skipped so the
+    // not-yet-recorded region stays black (and the 60 s wrap reads as a blank refill).
+    private func drawRecording(context: GraphicsContext, size: CGSize) {
+        let playheadX = size.width * recordingPlayheadFraction
+
+        if let rec = recordingThumbnail, rec.bins.count > 1 {
+            let binCount = Double(rec.bins.count)
+            let midY = size.height / 2.0
+            let scale = midY * 0.9
+            var path = Path()
+            for (i, bin) in rec.bins.enumerated() {
+                let x = size.width * Double(i) / (binCount - 1)
+                if x > playheadX { break }
+                path.move(to: CGPoint(x: x, y: midY - Double(bin.max) * scale))
+                path.addLine(to: CGPoint(x: x, y: midY - Double(bin.min) * scale))
+            }
+            context.stroke(path, with: .color(Self.recordingWaveColor), lineWidth: 1)
+        }
+
+        var line = Path()
+        line.move(to: CGPoint(x: playheadX, y: 0))
+        line.addLine(to: CGPoint(x: playheadX, y: size.height))
+        context.stroke(line, with: .color(Self.playheadColor), lineWidth: 1.5)
     }
 }

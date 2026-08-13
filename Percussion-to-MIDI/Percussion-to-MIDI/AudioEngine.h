@@ -39,6 +39,33 @@
 - (void)rewindToStart;
 - (void)setPlayheadPosition:(int64_t)frame;
 
+// MARK: Live input recording (Step 9 — Workflow 2b, no monitoring)
+
+/// Begins recording live audio input (mic / interface) to `url` as an unprocessed
+/// file (Branch A): installs a tap on the engine's input node that writes each
+/// incoming buffer to disk. Forces the file transport to its stopped/silent state
+/// so RNBO is fed silence (no monitoring; effects tails ring out). Request
+/// microphone permission before calling. No-op if already recording.
+- (void)startRecordingToURL:(NSURL *)url NS_SWIFT_NAME(startRecording(to:));
+
+/// Stops recording, removes the input tap, finalizes the file on disk, and returns
+/// its URL (nil if not recording or on failure). Load the returned file via
+/// -loadAudioFileFromURL: to hand off to the file-playback pipeline (Workflow 2b → 1a/1b).
+- (nullable NSURL *)stopRecording NS_SWIFT_NAME(stopRecording());
+
+/// YES while a live-input recording is in progress. Atomic — safe from the main thread.
+@property (readonly) BOOL isRecording;
+
+/// Elapsed time in milliseconds since the current recording started (0 when not
+/// recording). Drives the MM:SS.MMM position display.
+@property (readonly) double recordingElapsedMs;
+
+/// Snapshot of the live recording waveform as min/max Float32 pairs
+/// [min₀, max₀, min₁, max₁, ...] over the current 60-second scrolling window — same
+/// flat layout as -waveformThumbnailDataWithBinCount:. Bins past the live playhead
+/// read as (0, 0); the view draws only up to the playhead. Safe from the main thread.
+@property (readonly, nullable) NSData *recordingWaveformBins;
+
 /// Downsamples the left-channel PCM into `binCount` min/max pairs, returned
 /// as a flat NSData of Float32 values: [min₀, max₀, min₁, max₁, ...].
 /// Returns nil if no audio is loaded. O(N) in total PCM frame count.

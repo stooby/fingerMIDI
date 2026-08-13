@@ -407,6 +407,76 @@ static const AVAudioFrameCount kMaxFrames = 4096;
 // maximise timestamp resolution for onset detection (≈1.45 ms at 44.1 kHz).
 static const AVAudioFrameCount kOfflineBlockSize = 64;
 
+// ---------------------------------------------------------------------------
+// Live recording waveform accumulator (Step 9)
+//
+// Builds a scrolling min/max envelope of the incoming live-input signal over a
+// fixed 60-second window, for the red "recording" waveform. Fed from the input
+// tap block — which, unlike the AVAudioSourceNode render block, tolerates the
+// small mutex used here to hand a consistent snapshot to the main thread (the tap
+// is the standard place to do file I/O and light compute). Left channel only,
+// matching the static file thumbnail. When recording passes a 60 s boundary the
+// bins are cleared and refilled from the left, so the display "scrolls" by wrapping.
+// ---------------------------------------------------------------------------
+struct LiveWaveform {
+    static constexpr int    kBinCount     = 2048;
+    static constexpr double kWindowSeconds = 60.0;
+
+    std::mutex mutex;
+    float   minBins[kBinCount];
+    float   maxBins[kBinCount];
+    bool    binHasData[kBinCount];
+    double  sampleRate   = 44100.0;
+    int64_t windowFrames = (int64_t)(kWindowSeconds * 44100.0);
+    int64_t windowStart  = 0;   // global recorded-frame index at the start of the current window
+    int64_t windowIndex  = 0;
+
+    void clearBinsLocked() { std::memset(binHasData, 0, sizeof(binHasData)); }
+
+    // Reset for a new recording session (main thread; no tap running yet).
+    void reset(double sr) {
+        std::lock_guard<std::mutex> lock(mutex);
+        sampleRate   = sr > 0.0 ? sr : 44100.0;
+        windowFrames = (int64_t)(kWindowSeconds * sampleRate);
+        if (windowFrames < 1) windowFrames = 1;
+        windowStart  = 0;
+        windowIndex  = 0;
+        clearBinsLocked();
+    }
+
+    // Fold a tap buffer's left channel into the bins (tap thread). `bufStart` is the
+    // global recorded-frame index of sample 0 in this buffer.
+    void addSamples(const float *L, int64_t n, int64_t bufStart) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (windowFrames < 1) return;
+        for (int64_t i = 0; i < n; ++i) {
+            int64_t into = (bufStart + i) - windowStart;
+            while (into >= windowFrames) {          // crossed the 60 s boundary
+                windowStart += windowFrames;
+                windowIndex += 1;
+                clearBinsLocked();
+                into -= windowFrames;
+            }
+            if (into < 0) continue;                  // monotonic recording — shouldn't happen
+            int idx = (int)(into * kBinCount / windowFrames);
+            if (idx < 0) idx = 0; else if (idx >= kBinCount) idx = kBinCount - 1;
+            float s = L[i];
+            if (!binHasData[idx]) { minBins[idx] = s; maxBins[idx] = s; binHasData[idx] = true; }
+            else { if (s < minBins[idx]) minBins[idx] = s; if (s > maxBins[idx]) maxBins[idx] = s; }
+        }
+    }
+
+    // Copy the current bins into `out` (2*kBinCount floats: min,max pairs). No-data
+    // bins are written as (0, 0); the view only draws up to the live playhead anyway.
+    void copyBins(float *out) {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (int i = 0; i < kBinCount; ++i) {
+            out[2 * i]     = binHasData[i] ? minBins[i] : 0.0f;
+            out[2 * i + 1] = binHasData[i] ? maxBins[i] : 0.0f;
+        }
+    }
+};
+
 @implementation AudioEngine {
     RNBO::CoreObject   _coreObject;
     AVAudioEngine     *_engine;
@@ -428,6 +498,14 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
 
     // Cached hardware sample rate — queried once at init.
     double _engineSampleRate;
+
+    // Live input recording (Step 9 — Workflow 2b, no monitoring). The tap block
+    // (Branch A) writes to _recordFile and updates _recordedFrames + _liveWaveform.
+    AVAudioFile          *_recordFile;      // nil unless recording
+    NSURL                *_recordURL;       // temp file being written
+    std::atomic<bool>     _isRecording;
+    std::atomic<int64_t>  _recordedFrames;  // frames captured since record start
+    LiveWaveform          _liveWaveform;    // scrolling 60 s red-waveform accumulator
 
     // MIDI event capture. _midiCapture must outlive _paramEventInterface
     // (the interface holds a raw pointer to the handler); see -dealloc.
@@ -509,6 +587,9 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
             else NSLog(@"[AudioEngine] watched param '%@' not found in patch", paramId);
         }
         _paramCapture.setWatchedParamIndices(std::move(watched));
+
+        _isRecording.store(false, std::memory_order_relaxed);
+        _recordedFrames.store(0, std::memory_order_relaxed);
 
         [self setupEngine];
     }
@@ -832,6 +913,10 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
         NSLog(@"[AudioEngine] cannot open file: %@", err);
         return;
     }
+    if (file.length == 0) {
+        NSLog(@"[AudioEngine] file has zero frames, nothing to load: %@", url.lastPathComponent);
+        return;
+    }
 
     double targetSR = _engineSampleRate > 0.0 ? _engineSampleRate : 44100.0;
     AVAudioFormat *targetFormat = [[AVAudioFormat alloc]
@@ -927,6 +1012,140 @@ static const AVAudioFrameCount kOfflineBlockSize = 64;
     // after the seek and stamped at the new playhead; the settling window drops those
     // (and the seek discontinuity's false-triggers) so they aren't drawn.
     _midiCapture.armSeekSettle();
+}
+
+// ---------------------------------------------------------------------------
+// Live input recording (Step 9 — Workflow 2b, no monitoring)
+//
+// Branch A only: a tap on the input node writes each incoming buffer straight to
+// disk and folds its envelope into the live 60 s waveform. RNBO is fed silence
+// (transport forced to its stopped state) so nothing is monitored — the always-
+// alive render block keeps calling process() so any prior effects tail rings out.
+// There is deliberately no ring buffer here; that (and monitoring) is Step 9.5.
+// ---------------------------------------------------------------------------
+
+- (void)startRecordingToURL:(NSURL *)url {
+    if (_isRecording.load(std::memory_order_acquire)) return;
+
+    // Query the input format while the engine is still running (reliable here); the
+    // tap delivers buffers in this format.
+    AVAudioFormat *inputFmt = [_engine.inputNode outputFormatForBus:0];
+    if (inputFmt.sampleRate <= 0.0 || inputFmt.channelCount == 0) {
+        NSLog(@"[AudioEngine] cannot record: invalid input format %@", inputFmt);
+        return;
+    }
+
+    NSError *err = nil;
+    _recordFile = [[AVAudioFile alloc] initForWriting:url
+                                             settings:inputFmt.settings
+                                                error:&err];
+    if (!_recordFile) {
+        NSLog(@"[AudioEngine] cannot open recording file: %@", err);
+        return;
+    }
+    _recordURL = url;
+    _recordedFrames.store(0, std::memory_order_relaxed);
+    _liveWaveform.reset(inputFmt.sampleRate);
+
+    // Adding an input tap changes the engine's shared input/output I/O unit
+    // configuration. On macOS this MUST be done while the engine is stopped —
+    // installing the tap on the running (output-only) engine yields no input data,
+    // throws -10877 (kAudioUnitErr_InvalidElement), and corrupts output so later
+    // playback fails too. So: stop → install tap → restart with input+output active.
+    // (This briefly interrupts any ringing effects tail — see -stopRecording.)
+    [_engine stop];
+
+    // Feed RNBO silence during the take (no monitoring of the live input).
+    _isPlaying.store(false, std::memory_order_relaxed);
+
+    // Weak self so the tap block doesn't retain the engine (self → _engine → tap
+    // block → self cycle). The tap runs off the real-time render thread, so the ARC
+    // load and file I/O here are acceptable (this is the documented recording pattern,
+    // unlike the strictly real-time source-node render block — Branch A needs no ring).
+    // Reading _recordFile per-call rather than capturing it strongly lets -stopRecording
+    // drop the last reference and finalize the file on disk before the handoff load reads it.
+    __weak AudioEngine *weakSelf = self;
+    [_engine.inputNode installTapOnBus:0
+                            bufferSize:4096
+                                format:inputFmt
+                                 block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
+        __strong AudioEngine *s = weakSelf;
+        if (!s) return;
+
+        NSError *werr = nil;
+        if (![s->_recordFile writeFromBuffer:buffer error:&werr])
+            NSLog(@"[AudioEngine] recording write error: %@", werr);
+
+        AVAudioFrameCount    n     = buffer.frameLength;
+        int64_t              start = s->_recordedFrames.load(std::memory_order_relaxed);
+        const float * const *ch    = buffer.floatChannelData;
+        if (ch && ch[0]) s->_liveWaveform.addSamples(ch[0], (int64_t)n, start);
+        s->_recordedFrames.store(start + (int64_t)n, std::memory_order_relaxed);
+    }];
+
+    [_engine prepare];
+    NSError *startErr = nil;
+    if (![_engine startAndReturnError:&startErr]) {
+        // Most likely the default input and output are different devices (macOS
+        // requires one shared device for AVAudioEngine I/O). Abort the take and
+        // recover output-only playback so the app isn't left silent.
+        NSLog(@"[AudioEngine] failed to start engine for recording: %@", startErr);
+        [_engine.inputNode removeTapOnBus:0];
+        _recordFile = nil;
+        _recordURL  = nil;
+        [_engine prepare];
+        NSError *recoverErr = nil;
+        if (![_engine startAndReturnError:&recoverErr])
+            NSLog(@"[AudioEngine] failed to recover engine after record-start failure: %@", recoverErr);
+        return;
+    }
+
+    _isRecording.store(true, std::memory_order_release);
+    NSLog(@"[AudioEngine] recording started: %.0f Hz, %u ch → %@",
+          inputFmt.sampleRate, (unsigned)inputFmt.channelCount, url.lastPathComponent);
+}
+
+- (nullable NSURL *)stopRecording {
+    if (!_isRecording.load(std::memory_order_acquire)) return nil;
+
+    // Removing the tap also reconfigures the I/O unit, so do it while stopped, then
+    // resume output-only rendering. RNBO/DSP parameter state survives the restart
+    // (no prepareToProcess reset here).
+    [_engine stop];
+    [_engine.inputNode removeTapOnBus:0];
+    _isRecording.store(false, std::memory_order_release);
+
+    // Dropping the last strong reference finalizes the file header on disk.
+    _recordFile = nil;
+
+    [_engine prepare];
+    NSError *e = nil;
+    if (![_engine startAndReturnError:&e])
+        NSLog(@"[AudioEngine] failed to restart engine after recording: %@", e);
+
+    NSURL *url = _recordURL;
+    _recordURL = nil;
+    NSLog(@"[AudioEngine] recording stopped: %.2f s to %@",
+          (double)_recordedFrames.load(std::memory_order_relaxed) / _liveWaveform.sampleRate,
+          url.lastPathComponent);
+    return url;
+}
+
+- (BOOL)isRecording {
+    return _isRecording.load(std::memory_order_acquire);
+}
+
+- (double)recordingElapsedMs {
+    double sr = _liveWaveform.sampleRate;
+    if (sr <= 0.0) return 0.0;
+    return (double)_recordedFrames.load(std::memory_order_relaxed) / sr * 1000.0;
+}
+
+- (nullable NSData *)recordingWaveformBins {
+    NSMutableData *data =
+        [NSMutableData dataWithLength:(NSUInteger)(LiveWaveform::kBinCount * 2 * sizeof(float))];
+    _liveWaveform.copyBins((float *)data.mutableBytes);
+    return [data copy];
 }
 
 - (void)beginRealTimeCapture {
