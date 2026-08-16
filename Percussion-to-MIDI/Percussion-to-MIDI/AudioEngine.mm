@@ -527,6 +527,11 @@ struct LiveWaveform {
     MessageEventCapture                    _messageCapture;
     RNBO::ParameterEventInterfaceUniquePtr _messageListenerInterface;
 
+    // True while an offline render owns CoreObject (the engine is intentionally
+    // stopped). Read by the configuration-change handler so it never restarts the
+    // engine underneath the offline loop.
+    std::atomic<bool> _offlineRenderActive;
+
     // Absolute RNBO engine time (ms) at the start of the most recent offline
     // render main loop. RNBO's time counter is cumulative and is not reset by
     // prepareToProcess, so event timestamps must be normalised by subtracting
@@ -590,6 +595,7 @@ struct LiveWaveform {
 
         _isRecording.store(false, std::memory_order_relaxed);
         _recordedFrames.store(0, std::memory_order_relaxed);
+        _offlineRenderActive.store(false, std::memory_order_relaxed);
 
         [self setupEngine];
     }
@@ -597,6 +603,7 @@ struct LiveWaveform {
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_engine stop];
     // Reset interfaces before their handlers are destroyed (interfaces hold raw pointers).
     _messageListenerInterface.reset();
@@ -729,6 +736,61 @@ struct LiveWaveform {
     NSError *error = nil;
     if (![_engine startAndReturnError:&error])
         NSLog(@"[AudioEngine] failed to start: %@", error);
+
+    // Recover from audio I/O configuration changes: the user switching the default
+    // input/output device, unplugging an interface, or a sample-rate change. On such
+    // an event the engine stops itself and can invalidate node connections and taps,
+    // which otherwise leaves playback permanently dead (throwing -10877).
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(handleConfigurationChange:)
+               name:AVAudioEngineConfigurationChangeNotification
+             object:_engine];
+}
+
+- (void)handleConfigurationChange:(NSNotification *)note {
+    // May arrive on an arbitrary thread; serialize the graph rebuild with all other
+    // engine operations on the main queue.
+    dispatch_async(dispatch_get_main_queue(), ^{ [self reconfigureAfterConfigurationChange]; });
+}
+
+- (void)reconfigureAfterConfigurationChange {
+    // An offline render owns CoreObject and intentionally keeps the engine stopped;
+    // it restarts the engine itself when done. Don't touch it here.
+    if (_offlineRenderActive.load(std::memory_order_acquire)) return;
+
+    // An external change (device switch/unplug/format change) STOPS the engine — that's
+    // the case we must recover. If the engine is still running, this notification was
+    // benign or self-induced by our own record start/stop reconfiguration (which ends
+    // with the engine running), so there's nothing to rebuild and no take to abort.
+    if (_engine.isRunning) return;
+
+    // If a take was in progress, its input-device context may be gone — finalize the
+    // partial recording and hand it back so the UI leaves recording mode and loads it.
+    NSURL *interruptedURL = nil;
+    if (_isRecording.load(std::memory_order_acquire)) {
+        [_engine.inputNode removeTapOnBus:0];
+        _isRecording.store(false, std::memory_order_release);
+        _recordFile = nil;                       // finalize the partial file on disk
+        interruptedURL = _recordURL;
+        _recordURL = nil;
+    }
+
+    // Rebuild the output graph (connections can be invalidated by the change) and
+    // restart. The source node stays at _engineSampleRate; mainMixerNode converts to
+    // whatever the new output device wants, so PCM/RNBO state need not change.
+    AVAudioFormat *fmt = [[AVAudioFormat alloc]
+        initStandardFormatWithSampleRate:_engineSampleRate channels:2];
+    [_engine connect:_sourceNode           to:_engine.mainMixerNode format:fmt];
+    [_engine connect:_engine.mainMixerNode  to:_engine.outputNode   format:nil];
+
+    [_engine prepare];
+    NSError *err = nil;
+    if (![_engine startAndReturnError:&err])
+        NSLog(@"[AudioEngine] failed to restart after configuration change: %@", err);
+
+    if (interruptedURL && _recordingInterruptedHandler)
+        _recordingInterruptedHandler(interruptedURL);
 }
 
 - (void)start {
@@ -741,6 +803,9 @@ struct LiveWaveform {
 }
 
 - (void)stopForOfflineRender {
+    // Block the configuration-change handler from restarting the engine while the
+    // offline loop owns CoreObject (the engine is intentionally stopped just below).
+    _offlineRenderActive.store(true, std::memory_order_release);
     // Suppress parameter-change delivery to Swift for the duration of the offline
     // render. prepareToProcess(reset=true) inside the offline loop fires bang
     // events for the patch's assign_defaults values, and pushAllValuesToEngine
@@ -777,6 +842,8 @@ struct LiveWaveform {
     NSError *error = nil;
     if (![_engine startAndReturnError:&error])
         NSLog(@"[AudioEngine] failed to restart after offline render: %@", error);
+    // Offline render finished — let the configuration-change handler manage the engine again.
+    _offlineRenderActive.store(false, std::memory_order_release);
     // Re-enable parameter-change delivery. The Swift layer calls
     // pushAllValuesToEngine() immediately after this — those events come back
     // with source == _paramEventInterface and are filtered out by source id,

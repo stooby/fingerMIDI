@@ -143,6 +143,12 @@
 /// the source-id level and never reach this block. `index` is the RNBO parameter
 /// index; `value` is the new value.
 @property (nonatomic, copy, nullable) void (^parameterChangeHandler)(int index, float value);
+
+/// Invoked on the main thread when an audio I/O configuration change (e.g. the user
+/// switches the default input/output device) forces an in-progress recording to be
+/// finalized early. The engine hands back the partial recording's URL (nil on failure)
+/// so the UI can leave recording mode and load whatever was captured.
+@property (nonatomic, copy, nullable) void (^recordingInterruptedHandler)(NSURL * _Nullable url);
 @end
 #endif
 

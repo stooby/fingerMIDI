@@ -593,6 +593,14 @@ struct ContentView: View {
             Text("Enable microphone access for PercTranscriber in System Settings → "
                  + "Privacy & Security → Microphone to record live input.")
         }
+        .onAppear {
+            // If an audio-device change forces the engine to finalize a recording
+            // mid-take, leave recording mode and load whatever was captured.
+            engine.recordingInterruptedHandler = { url in
+                isRecording = false
+                if let url { loadFile(url: url) }
+            }
+        }
         #if os(macOS)
         // Clear the window's first responder so no text field is auto-focused on launch.
         .background(InitialFocusClearer())
