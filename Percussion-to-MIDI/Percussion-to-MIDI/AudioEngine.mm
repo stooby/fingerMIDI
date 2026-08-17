@@ -1159,6 +1159,7 @@ struct LiveWaveform {
         NSLog(@"[AudioEngine] failed to start engine for recording: %@", startErr);
         [_engine.inputNode removeTapOnBus:0];
         _recordFile = nil;
+        if (_recordURL) [[NSFileManager defaultManager] removeItemAtURL:_recordURL error:nil];
         _recordURL  = nil;
         [_engine prepare];
         NSError *recoverErr = nil;

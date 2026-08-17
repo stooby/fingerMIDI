@@ -416,7 +416,8 @@ struct ContentView: View {
     @State private var isExporting = false
     @State private var isMIDIAnalyzing = false
     @State private var showFilePicker = false
-    @State private var loadedFileName: String?
+    @State private var loadedFileName: String?   // header display only; nil for recordings
+    @State private var audioLoaded = false       // whether PCM is loaded (drives transport enablement)
     @State private var waveformThumbnail: WaveformThumbnail? = nil
     @State private var midiNoteOverlay: [MIDINoteEvent] = []
     // nil = no analysis run yet for the currently loaded file.
@@ -433,7 +434,7 @@ struct ContentView: View {
     @State private var realTimeCoverageMs: Double = 0
 
     private var engine: AudioEngine { store.engine }
-    private var fileLoaded: Bool { loadedFileName != nil }
+    private var fileLoaded: Bool { audioLoaded }
 
     // The five onset tuning parameters whose changes make the overlay stale.
     // Onset/enable and Onset/needs_init are excluded: toggling them doesn't alter
@@ -585,7 +586,7 @@ struct ContentView: View {
             allowsMultipleSelection: false
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
-            loadFile(url: url, securityScoped: true)
+            loadFile(url: url, securityScoped: true, displayName: url.lastPathComponent)
         }
         .alert("Microphone Access Needed", isPresented: $showMicDeniedAlert) {
             Button("OK", role: .cancel) { }
@@ -596,10 +597,7 @@ struct ContentView: View {
         .onAppear {
             // If an audio-device change forces the engine to finalize a recording
             // mid-take, leave recording mode and load whatever was captured.
-            engine.recordingInterruptedHandler = { url in
-                isRecording = false
-                if let url { loadFile(url: url) }
-            }
+            engine.recordingInterruptedHandler = { url in finishRecording(url) }
         }
         #if os(macOS)
         // Clear the window's first responder so no text field is auto-focused on launch.
@@ -778,10 +776,18 @@ struct ContentView: View {
     }
 
     private func stopRecordingAction() {
-        let url = engine.stopRecording()
+        finishRecording(engine.stopRecording())
+    }
+
+    // Leaves recording mode and hands the take off to the file-playback pipeline
+    // (Workflow 2b → 1a/1b), then deletes the temp file: its samples now live in the
+    // in-memory PCM array and exports render from there, so the on-disk file is
+    // disposable and must not accumulate in the container's tmp.
+    private func finishRecording(_ url: URL?) {
         isRecording = false
-        // Hand the recording off to the file-playback pipeline (Workflow 2b → 1a/1b).
-        if let url { loadFile(url: url) }
+        guard let url else { return }
+        loadFile(url: url, displayName: nil)
+        try? FileManager.default.removeItem(at: url)
     }
 
     // Requests microphone permission, invoking `completion` on the main thread.
@@ -812,11 +818,12 @@ struct ContentView: View {
     // Shared post-load routine for both file import and record-stop: loads `url` into
     // the host PCM array, regenerates the waveform thumbnail on a background thread, and
     // resets all per-file overlay / analysis / spectral state.
-    private func loadFile(url: URL, securityScoped: Bool = false) {
+    private func loadFile(url: URL, securityScoped: Bool = false, displayName: String?) {
         let accessed = securityScoped && url.startAccessingSecurityScopedResource()
         engine.loadAudioFile(from: url)
         if accessed { url.stopAccessingSecurityScopedResource() }
-        loadedFileName = url.lastPathComponent
+        loadedFileName = displayName   // nil for recordings — the temp file is gone, show no name
+        audioLoaded = true
         let eng = engine
         DispatchQueue.global(qos: .userInitiated).async {
             guard let data = eng.waveformThumbnailData(binCount: 2048) else { return }
