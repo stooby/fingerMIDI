@@ -364,7 +364,7 @@ struct NumberInputCell: View {
             editText = formatted(value)
             return
         }
-        let clamped = max(param.min, min(param.max, parsed))
+        let clamped = clampToRange(parsed, min: param.min, max: param.max)
         editText = formatted(clamped)
         onCommit(clamped)
     }
@@ -406,7 +406,7 @@ struct InputValueField: View {
             editText = format(value)
             return
         }
-        let clamped = parsed < min ? min : parsed > max ? max : parsed
+        let clamped = clampToRange(parsed, min: min, max: max)
         editText = format(clamped)
         onCommit(clamped)
     }
@@ -924,44 +924,6 @@ struct ContentView: View {
 
     // MARK: Offline Export
 
-    // Pairs raw RNBO MIDI event dicts into MIDINoteEvent on/off matches.
-    private func pairMIDIEvents(_ rawEvents: [[String: Any]]) -> [MIDINoteEvent] {
-        let sorted = rawEvents.sorted {
-            (($0["timestampMs"] as? Double) ?? 0) < (($1["timestampMs"] as? Double) ?? 0)
-        }
-        var open: [UInt8: (onsetMs: Double, velocity: UInt8)] = [:]
-        var result: [MIDINoteEvent] = []
-        for dict in sorted {
-            guard
-                let ms = dict["timestampMs"] as? Double,
-                let bytes = dict["bytes"] as? Data,
-                bytes.count >= 3
-            else { continue }
-            let statusNibble = bytes[0] >> 4
-            let note = bytes[1]
-            let velocity = bytes[2]
-            if statusNibble == 0x9 && velocity > 0 {
-                open[note] = (onsetMs: ms, velocity: velocity)
-            } else if statusNibble == 0x8 || (statusNibble == 0x9 && velocity == 0) {
-                if let entry = open[note] {
-                    result.append(MIDINoteEvent(
-                        note: note, velocity: entry.velocity,
-                        onsetMs: entry.onsetMs, durationMs: ms - entry.onsetMs
-                    ))
-                    open.removeValue(forKey: note)
-                }
-            }
-        }
-        // Flush any unclosed note-ons with a fallback duration.
-        for (note, entry) in open {
-            result.append(MIDINoteEvent(
-                note: note, velocity: entry.velocity,
-                onsetMs: entry.onsetMs, durationMs: 50
-            ))
-        }
-        return result.sorted { $0.onsetMs < $1.onsetMs }
-    }
-
     private func analyzeMIDI() {
         guard !isPlaying, engine.totalFrameCount > 0, !isMIDIAnalyzing else { return }
         if let i = store.params.firstIndex(where: { $0.rnboId == "Onset/enable" }),
@@ -979,7 +941,7 @@ struct ContentView: View {
         DispatchQueue.global(qos: .userInitiated).async { [engine] in
             engine.renderOfflineMIDI()
             let rawEvents = engine.collectAndClearMidiEvents() ?? []
-            let notes = self.pairMIDIEvents(rawEvents)
+            let notes = pairMIDIEventsForDisplay(rawEvents)
             DispatchQueue.main.async {
                 // resumeAfterOfflineRender calls prepareToProcess(reset=true), resetting
                 // RNBO parameters; re-push UI values immediately to restore DSP state.
@@ -1067,7 +1029,7 @@ struct ContentView: View {
         DispatchQueue.global(qos: .userInitiated).async { [engine] in
             engine.renderOfflineMIDI()
             let rawEvents = engine.collectAndClearMidiEvents() ?? []
-            let notes = self.pairMIDIEvents(rawEvents)
+            let notes = pairMIDIEventsForDisplay(rawEvents)
 
             do {
                 let data = try buildMIDIFile(from: rawEvents)

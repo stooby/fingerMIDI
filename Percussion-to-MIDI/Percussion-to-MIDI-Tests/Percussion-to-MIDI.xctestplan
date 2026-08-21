@@ -1,0 +1,35 @@
+{
+  "configurations" : [
+    {
+      "id" : "74F0E6C8-C5E9-4625-8BDD-4552C2B8AB92",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:Percussion-to-MIDI.xcodeproj",
+      "identifier" : "D2972AF22FC160EC00FB1743",
+      "name" : "Percussion-to-MIDI"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "skippedTests" : [
+        "Percussion_to_MIDI_Tests",
+        "Percussion_to_MIDI_Tests\/testExample()",
+        "Percussion_to_MIDI_Tests\/testPerformanceExample()"
+      ],
+      "target" : {
+        "containerPath" : "container:Percussion-to-MIDI.xcodeproj",
+        "identifier" : "D21450283037EC88009F434A",
+        "name" : "Percussion-to-MIDI-Tests"
+      }
+    }
+  ],
+  "version" : 1
+}

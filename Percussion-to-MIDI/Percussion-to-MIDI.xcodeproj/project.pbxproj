@@ -13,9 +13,21 @@
 		D2972C2D2FC207BA00FB1743 /* SwiftMIDIFile in Frameworks */ = {isa = PBXBuildFile; productRef = D2972C2C2FC207BA00FB1743 /* SwiftMIDIFile */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		D214502D3037EC89009F434A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D2972AEB2FC160EC00FB1743 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D2972AF22FC160EC00FB1743;
+			remoteInfo = "Percussion-to-MIDI";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		D2144C8B2FC368F5009F434A /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		D21450293037EC88009F434A /* Percussion-to-MIDI-Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Percussion-to-MIDI-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Percussion-to-MIDI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2FCABE23044D5C800596892 /* Percussion-to-MIDI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Percussion-to-MIDI.xctestplan"; path = "Percussion-to-MIDI-Tests/Percussion-to-MIDI.xctestplan"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -89,6 +101,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		D214502A3037EC88009F434A /* Percussion-to-MIDI-Tests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Percussion-to-MIDI-Tests";
+			sourceTree = "<group>";
+		};
 		D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -100,6 +117,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		D21450263037EC88009F434A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D2972AF02FC160EC00FB1743 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -125,7 +149,9 @@
 		D2972AEA2FC160EC00FB1743 = {
 			isa = PBXGroup;
 			children = (
+				D2FCABE23044D5C800596892 /* Percussion-to-MIDI.xctestplan */,
 				D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */,
+				D214502A3037EC88009F434A /* Percussion-to-MIDI-Tests */,
 				D2144C8A2FC368F5009F434A /* Frameworks */,
 				D2972AF42FC160EC00FB1743 /* Products */,
 			);
@@ -135,6 +161,7 @@
 			isa = PBXGroup;
 			children = (
 				D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */,
+				D21450293037EC88009F434A /* Percussion-to-MIDI-Tests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -142,6 +169,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		D21450283037EC88009F434A /* Percussion-to-MIDI-Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D214502F3037EC89009F434A /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI-Tests" */;
+			buildPhases = (
+				D21450253037EC88009F434A /* Sources */,
+				D21450263037EC88009F434A /* Frameworks */,
+				D21450273037EC88009F434A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D214502E3037EC89009F434A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D214502A3037EC88009F434A /* Percussion-to-MIDI-Tests */,
+			);
+			name = "Percussion-to-MIDI-Tests";
+			packageProductDependencies = (
+			);
+			productName = "Percussion-to-MIDI-Tests";
+			productReference = D21450293037EC88009F434A /* Percussion-to-MIDI-Tests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D2972AFE2FC160EE00FB1743 /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI" */;
@@ -177,6 +227,10 @@
 				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
+					D21450283037EC88009F434A = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = D2972AF22FC160EC00FB1743;
+					};
 					D2972AF22FC160EC00FB1743 = {
 						CreatedOnToolsVersion = 26.4.1;
 					};
@@ -201,11 +255,19 @@
 			projectRoot = "";
 			targets = (
 				D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */,
+				D21450283037EC88009F434A /* Percussion-to-MIDI-Tests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		D21450273037EC88009F434A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D2972AF12FC160EC00FB1743 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -216,6 +278,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		D21450253037EC88009F434A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D2972AEF2FC160EC00FB1743 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -225,7 +294,65 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		D214502E3037EC89009F434A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */;
+			targetProxy = D214502D3037EC89009F434A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		D21450303037EC89009F434A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Percussion-to-MIDI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Percussion-to-MIDI";
+				XROS_DEPLOYMENT_TARGET = 26.4;
+			};
+			name = Debug;
+		};
+		D21450313037EC89009F434A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Percussion-to-MIDI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Percussion-to-MIDI";
+				XROS_DEPLOYMENT_TARGET = 26.4;
+			};
+			name = Release;
+		};
 		D2972AFC2FC160EE00FB1743 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -441,6 +568,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		D214502F3037EC89009F434A /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI-Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D21450303037EC89009F434A /* Debug */,
+				D21450313037EC89009F434A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		D2972AEE2FC160EC00FB1743 /* Build configuration list for PBXProject "Percussion-to-MIDI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
