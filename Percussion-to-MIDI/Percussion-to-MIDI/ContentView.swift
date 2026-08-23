@@ -1346,17 +1346,41 @@ struct ContentView: View {
 }
 
 #if os(macOS)
-// Clears the window's first responder the moment it attaches, so macOS doesn't
-// auto-focus the first text field on launch.
+// Clears the window's first responder so macOS doesn't auto-focus the first text
+// field on launch.
 private struct InitialFocusClearer: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { ClearingView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class ClearingView: NSView {
+        private var keyObserver: NSObjectProtocol?
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            window?.initialFirstResponder = nil
-            window?.makeFirstResponder(nil)
+            guard let window else { return }
+            window.initialFirstResponder = nil
+            window.makeFirstResponder(nil)
+            // AppKit recalculates the key view loop and assigns an initial first
+            // responder when the window becomes key, which happens after the clear
+            // above and re-focuses a text field. Clear once more at that point,
+            // synchronously (queue: nil, not a dispatch hop) to avoid the priority
+            // inversion the async-dispatch version of this fix used to cause, then
+            // stop observing so we don't steal focus back on later app switches.
+            keyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: window, queue: nil
+            ) { [weak self, weak window] _ in
+                window?.makeFirstResponder(nil)
+                if let observer = self?.keyObserver {
+                    NotificationCenter.default.removeObserver(observer)
+                }
+                self?.keyObserver = nil
+            }
+        }
+
+        deinit {
+            if let keyObserver {
+                NotificationCenter.default.removeObserver(keyObserver)
+            }
         }
     }
 }
