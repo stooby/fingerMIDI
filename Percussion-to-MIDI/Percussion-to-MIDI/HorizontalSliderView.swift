@@ -230,7 +230,7 @@ struct SpectralCentroidIcon: View {
                        style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
         }
         .contentShape(Rectangle())
-        .help("Spectral Centroid: 0 Hz (Min) | 10000 Hz (Max)")
+        .tooltip("SpecCentCutoff.range")
     }
 }
 
@@ -323,7 +323,7 @@ struct SpectralFlatnessIcon: View {
             }
         }
         .contentShape(Rectangle())
-        .help("Spectral Flatness: 0.0 (Min / Pure Sine Tone) | 1.0 (Max / Pure Noise)")
+        .tooltip("SpecFlatCutoff.range")
     }
 }
 
@@ -461,8 +461,10 @@ struct SpectralSlidersView: View {
             VStack(spacing: 1) {
                 numberBox(index: ci, feature: .centroid, axisMax: store.centroidAxisMax)
                     .frame(height: Self.rowHeight)
+                    .tooltip("SpecCentCutoff.range")
                 numberBox(index: fi, feature: .flatness, axisMax: store.flatnessAxisMax)
                     .frame(height: Self.rowHeight)
+                    .tooltip("SpecFlatCutoff.range")
             }
 
             // Left = "min" spectral icons.
@@ -476,10 +478,12 @@ struct SpectralSlidersView: View {
                 slider(index: ci, feature: .centroid,
                        axisMax: store.centroidAxisMax, samples: store.centroidSamples, now: now)
                     .frame(height: Self.rowHeight)
+                    .tooltip("SpecCentCutoff.slider")
                 Rectangle().fill(SpectralDisplayConfig.borderColor).frame(height: 1)
                 slider(index: fi, feature: .flatness,
                        axisMax: store.flatnessAxisMax, samples: store.flatnessSamples, now: now)
                     .frame(height: Self.rowHeight)
+                    .tooltip("SpecFlatCutoff.slider")
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 4)

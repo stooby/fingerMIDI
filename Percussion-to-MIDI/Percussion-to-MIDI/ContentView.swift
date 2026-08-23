@@ -498,7 +498,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .center) {
-                Text("PercTranscriber")
+                Text("Percussion-to-MIDI")
                     .font(.title2)
                 if let name = loadedFileName {
                     HStack {
@@ -631,12 +631,14 @@ struct ContentView: View {
                 Button("Analyze") { analyzeMIDI() }
                     .buttonStyle(.bordered)
                     .disabled(!fileLoaded || isPlaying || isRecording || isExporting || isMIDIAnalyzing || !onsetParamsDirty || fullRealTimeCoverageAchieved)
+                    .tooltip("analyze")
 
                 // Onset tuning number boxes (Thresh / Relax / Floor / Min Gap / Med Span)
                 ForEach(indexedParams(ofType: .numberInput), id: \.0) { i, param in
                     NumberInputCell(param: param, value: store.values[i]) { newVal in
                         store.set(value: newVal, at: i)
                     }
+                    .tooltip(param.rnboId)
                 }
             }
 
@@ -660,6 +662,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(!fileLoaded || isRecording)
+                .tooltip("transport.rewind")
 
                 // Play / Stop. While recording, this is a Stop that ends the take.
                 Button {
@@ -682,8 +685,10 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint((isPlaying || isRecording) ? Color.crayonTurquoise.opacity(0.5) : .accentColor)
                 .disabled(!fileLoaded && !isRecording)
+                .tooltip("transport.play")
 
                 recordButton
+                    .tooltip("transport.record")
             }
 
             Spacer()
@@ -700,6 +705,7 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Color.crayonMagenta.opacity(0.25))
                 .disabled(isRecording)
+                .tooltip("import.audio")
 
                 HStack(spacing: 8) {
                     Button { exportAudioOffline() } label: {
@@ -710,6 +716,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Color.crayonTangerine.opacity(0.25))
+                    .tooltip("export.audio")
 
                     Button { exportMIDIOffline() } label: {
                         HStack(spacing: 3) {
@@ -720,6 +727,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Color.crayonSpring.opacity(0.25))
+                    .tooltip("export.midi")
                 }
                 .disabled(!fileLoaded || isRecording || isExporting || isMIDIAnalyzing)
                 .overlay {
@@ -1220,6 +1228,7 @@ struct ContentView: View {
         }
         .buttonStyle(.bordered)
         .tint(isOn ? .accentColor : nil)
+        .tooltip(store.params[i].rnboId)
     }
 
     // Text onset toggle (e.g. Enable Training = "Train"). Same toggle semantics.
@@ -1233,6 +1242,7 @@ struct ContentView: View {
         }
         .buttonStyle(.bordered)
         .tint(isOn ? .accentColor : nil)
+        .tooltip(store.params[i].rnboId)
     }
 
     @ViewBuilder
@@ -1257,6 +1267,7 @@ struct ContentView: View {
                 onCommit: { store.set(value: $0, at: i) }
             )
         }
+        .tooltip(param.rnboId)
     }
 
     // Greyhole preset: native discrete slider + randomize dice button
@@ -1270,6 +1281,9 @@ struct ContentView: View {
         VStack(spacing: 4) {
             Slider(value: binding, in: param.min...(param.max-1), step: 1)
                 .frame(width: 240)
+                // Scoped to the slider, not the whole VStack: a container-wide tooltip
+                // spans all 240pt and swallows the dice button's own tooltip rect.
+                .tooltip(param.rnboId)
             // Label centered under the slider; dice pinned leading, value pinned trailing.
             ZStack {
                 Text("Greyhole Delay Presets")
@@ -1282,6 +1296,7 @@ struct ContentView: View {
                         Image(systemName: "dice")
                     }
                     .buttonStyle(.bordered)
+                    .tooltip("greyhole.randomize")
                     Spacer()
                     Text(formattedValue(store.values[i], param: param))
                         .font(.parameterValueLabel).monospacedDigit()
@@ -1319,6 +1334,7 @@ struct ContentView: View {
                 .font(.parameterLabel)
                 .foregroundStyle(.secondary)
         }
+        .tooltip(store.params[i].rnboId)
     }
 
     private func formattedValue(_ v: Float, param: ParameterStore.Param) -> String {
