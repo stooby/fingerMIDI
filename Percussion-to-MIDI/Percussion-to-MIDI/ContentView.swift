@@ -505,7 +505,7 @@ struct ContentView: View {
                         Text(name)
                             .font(.caption).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle)
-                            .frame(maxWidth: 200, alignment: .leading)
+                            .frame(maxWidth: 400, alignment: .leading)
                         Spacer()
                     }
                 }
@@ -541,7 +541,11 @@ struct ContentView: View {
                     midiLatencyCompensationMs: engine.processingLatencyMs,
                     isRecording: isRecording,
                     recordingThumbnail: recThumb,
-                    recordingPlayheadFraction: recElapsed.truncatingRemainder(dividingBy: 60_000) / 60_000
+                    recordingPlayheadFraction: recElapsed.truncatingRemainder(dividingBy: 60_000) / 60_000,
+                    onImportRequested: {
+                        guard !isRecording else { return }
+                        showFilePicker = true
+                    }
                 )
             }
             .frame(height: 150)

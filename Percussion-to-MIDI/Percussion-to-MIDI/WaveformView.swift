@@ -55,6 +55,7 @@ struct WaveformView: View {
     var isRecording: Bool = false
     var recordingThumbnail: WaveformThumbnail? = nil
     var recordingPlayheadFraction: Double = 0
+    var onImportRequested: (() -> Void)? = nil
 
     // Recording envelope + live playhead colors.
     private static let recordingWaveColor = Color(red: 1.0, green: 0.23, blue: 0.19)  // system red
@@ -111,7 +112,7 @@ struct WaveformView: View {
 
                 // Placeholder text when no file is loaded
                 if thumbnail == nil {
-                    let resolved = context.resolve(Text(verbatim: "Import an Audio File")
+                    let resolved = context.resolve(Text("Import or Record an Audio File")
                         .font(.system(size: 14))
                         .foregroundColor(Color(nsColor: .tertiaryLabelColor)))
                     let textSize = resolved.measure(in: size)
@@ -137,8 +138,13 @@ struct WaveformView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        guard thumbnail != nil else { return }
                         let fraction = max(0, min(1, value.location.x / geo.size.width))
                         onSeek?(fraction)
+                    }
+                    .onEnded { value in
+                        guard thumbnail == nil else { return }
+                        onImportRequested?()
                     }
             )
         }
