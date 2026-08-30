@@ -326,9 +326,15 @@ struct NumberInputCell: View {
     var body: some View {
         VStack(spacing: 3) {
             TextField("", text: $editText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 62)
+                .textFieldStyle(.plain)
+                .frame(width: 50)
                 .multilineTextAlignment(.center)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(SpectralDisplayConfig.borderColor, lineWidth: 1)
+                )
                 .focused($isFocused)
                 .onAppear { editText = formatted(value) }
                 .onChange(of: value) { _, new in
@@ -604,8 +610,8 @@ struct ContentView: View {
             engine.recordingInterruptedHandler = { url in finishRecording(url) }
         }
         #if os(macOS)
-        // Clear the window's first responder so no text field is auto-focused on launch.
-        .background(InitialFocusClearer())
+        // Prevents AppKit's auto-focus of the first text field on launch.
+        .background(InitialResponderAnchor())
         #endif
     }
 
@@ -1350,41 +1356,16 @@ struct ContentView: View {
 }
 
 #if os(macOS)
-// Clears the window's first responder so macOS doesn't auto-focus the first text
-// field on launch.
-private struct InitialFocusClearer: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { ClearingView() }
+private struct InitialResponderAnchor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { AnchorView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
 
-    private final class ClearingView: NSView {
-        private var keyObserver: NSObjectProtocol?
+    private final class AnchorView: NSView {
+        override var acceptsFirstResponder: Bool { true }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard let window else { return }
-            window.initialFirstResponder = nil
-            window.makeFirstResponder(nil)
-            // AppKit recalculates the key view loop and assigns an initial first
-            // responder when the window becomes key, which happens after the clear
-            // above and re-focuses a text field. Clear once more at that point,
-            // synchronously (queue: nil, not a dispatch hop) to avoid the priority
-            // inversion the async-dispatch version of this fix used to cause, then
-            // stop observing so we don't steal focus back on later app switches.
-            keyObserver = NotificationCenter.default.addObserver(
-                forName: NSWindow.didBecomeKeyNotification, object: window, queue: nil
-            ) { [weak self, weak window] _ in
-                window?.makeFirstResponder(nil)
-                if let observer = self?.keyObserver {
-                    NotificationCenter.default.removeObserver(observer)
-                }
-                self?.keyObserver = nil
-            }
-        }
-
-        deinit {
-            if let keyObserver {
-                NotificationCenter.default.removeObserver(keyObserver)
-            }
+            window?.initialFirstResponder = self
         }
     }
 }
