@@ -144,7 +144,7 @@ final class ParameterStore {
         "Onset/thresh":          .init(label: "Thresh",            controlType: .numberInput, order:  3, initialOverride:  0.5),
         "Onset/relaxtime":       .init(label: "Relax",             controlType: .numberInput, order:  4, initialOverride:  0.5),
         "Onset/floor":           .init(label: "Floor",             controlType: .numberInput, order:  5, initialOverride:  0.1),
-        "Onset/mingap":          .init(label: "Min Gap",           controlType: .numberInput, order:  6, initialOverride: 20.0),
+        "Onset/mingap":          .init(label: "Min Gap",           controlType: .numberInput, order:  6, initialOverride: 60.0),
         "Onset/medspan":         .init(label: "Med Span",          controlType: .numberInput, order:  7, initialOverride: 11.0),
         // Onset/odftype: reserved — dropdown (combo box) to be added in a later step.
 
