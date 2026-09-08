@@ -1,6 +1,6 @@
 //
 //  HorizontalSliderView.swift
-//  Percussion-to-MIDI
+//  fingerMIDI
 //
 //  SpecCentCutoff / SpecFlatCutoff horizontal sliders with a live, fading spectral
 //  histogram behind each. Fed by ParameterStore.centroidSamples / .flatnessSamples

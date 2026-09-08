@@ -185,7 +185,7 @@ and can be combined with it to produce both an audio file and a MIDI file from a
    - Set **C++ Language Dialect** to C++17 or later (RNBO requires C++17 minimum; C++20 or C++23 are fine).
    - **C++ Standard Library** does not need to be set — on macOS, `libc++` is the only available standard library and is used by default. There is no separate setting for it in current Xcode.
 3. Create a `BridgingHeader.h` file and add it to the project.
-4. Set it as the bridging header in **Build Settings → Swift Compiler - General → Bridging Header**. Enter the path relative to the project root, e.g. `$(PROJECT_NAME)/BridgingHeader.h` (or the literal folder name if your project name contains hyphens, e.g. `Percussion-to-MIDI/BridgingHeader.h`).
+4. Set it as the bridging header in **Build Settings → Swift Compiler - General → Bridging Header**. Enter the path relative to the project root, e.g. `$(PROJECT_NAME)/BridgingHeader.h` (or the literal folder name if your project name contains hyphens, e.g. `fingerMIDI/BridgingHeader.h`).
    - Note: in current Xcode the setting is labelled "Bridging Header" under "Swift Compiler - General", not "Objective-C Bridging Header".
    - The separately-listed "Generated Header Name" field (pre-populated with `$(PROJECT_NAME)-Swift.h`) is unrelated — it controls an auto-generated Swift→ObjC header. Leave it as-is.
 

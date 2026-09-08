@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  Percussion-to-MIDI
+//  fingerMIDI
 //
 //  Created by Scott Tooby on 5/22/26.
 //
@@ -504,7 +504,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .center) {
-                Text("Percussion-to-MIDI")
+                Text("👉fingerMIDI👈")
                     .font(.title2)
                 if let name = loadedFileName {
                     HStack {
@@ -569,7 +569,7 @@ struct ContentView: View {
         }
         // Window sizing (points, not pixels — a 2× Retina display renders these at 2252×982):
         // fixed 490 height (min == max), and a 1126 floor on width that can grow but not shrink.
-        // Paired with .windowResizability(.contentSize) on the WindowGroup in Percussion_to_MIDIApp.
+        // Paired with .windowResizability(.contentSize) on the WindowGroup in fingerMIDIApp.
         .frame(minWidth: 1126, idealWidth: 1126, maxWidth: 2252,
                minHeight: 490, maxHeight: 490)
         .onReceive(Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()) { _ in
@@ -601,7 +601,7 @@ struct ContentView: View {
         .alert("Microphone Access Needed", isPresented: $showMicDeniedAlert) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("Enable microphone access for PercTranscriber in System Settings → "
+            Text("Enable microphone access for fingerMIDI in System Settings → "
                  + "Privacy & Security → Microphone to record live input.")
         }
         .onAppear {
@@ -823,7 +823,7 @@ struct ContentView: View {
     }
 
     private func tempRecordingURL() -> URL {
-        let name = "PercTranscriber-Recording-\(Int(Date().timeIntervalSince1970)).caf"
+        let name = "fingerMIDI-Recording-\(Int(Date().timeIntervalSince1970)).caf"
         return FileManager.default.temporaryDirectory.appendingPathComponent(name)
     }
 

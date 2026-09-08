@@ -19,19 +19,19 @@
 			containerPortal = D2972AEB2FC160EC00FB1743 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = D2972AF22FC160EC00FB1743;
-			remoteInfo = "Percussion-to-MIDI";
+			remoteInfo = "fingerMIDI";
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		D2144C8B2FC368F5009F434A /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
-		D21450293037EC88009F434A /* Percussion-to-MIDI-Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Percussion-to-MIDI-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Percussion-to-MIDI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		D2FCABE23044D5C800596892 /* Percussion-to-MIDI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Percussion-to-MIDI.xctestplan"; path = "Percussion-to-MIDI-Tests/Percussion-to-MIDI.xctestplan"; sourceTree = "<group>"; };
+		D21450293037EC88009F434A /* fingerMIDI-Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "fingerMIDI-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2972AF32FC160EC00FB1743 /* fingerMIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "fingerMIDI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2FCABE23044D5C800596892 /* fingerMIDI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; name = "fingerMIDI.xctestplan"; path = "fingerMIDI-Tests/fingerMIDI.xctestplan"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		D2972C252FC16FF100FB1743 /* Exceptions for "Percussion-to-MIDI" folder in "Percussion-to-MIDI" target */ = {
+		D2972C252FC16FF100FB1743 /* Exceptions for "fingerMIDI" folder in "fingerMIDI" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				RNBO/dependencies.json,
@@ -96,22 +96,22 @@
 				RNBO/rnbo/test/package.json,
 				RNBO/rnbo/version.cmake,
 			);
-			target = D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */;
+			target = D2972AF22FC160EC00FB1743 /* fingerMIDI */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		D214502A3037EC88009F434A /* Percussion-to-MIDI-Tests */ = {
+		D214502A3037EC88009F434A /* fingerMIDI-Tests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Percussion-to-MIDI-Tests";
+			path = "fingerMIDI-Tests";
 			sourceTree = "<group>";
 		};
-		D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */ = {
+		D2972AF52FC160EC00FB1743 /* fingerMIDI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				D2972C252FC16FF100FB1743 /* Exceptions for "Percussion-to-MIDI" folder in "Percussion-to-MIDI" target */,
+				D2972C252FC16FF100FB1743 /* Exceptions for "fingerMIDI" folder in "fingerMIDI" target */,
 			);
-			path = "Percussion-to-MIDI";
+			path = "fingerMIDI";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -149,9 +149,9 @@
 		D2972AEA2FC160EC00FB1743 = {
 			isa = PBXGroup;
 			children = (
-				D2FCABE23044D5C800596892 /* Percussion-to-MIDI.xctestplan */,
-				D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */,
-				D214502A3037EC88009F434A /* Percussion-to-MIDI-Tests */,
+				D2FCABE23044D5C800596892 /* fingerMIDI.xctestplan */,
+				D2972AF52FC160EC00FB1743 /* fingerMIDI */,
+				D214502A3037EC88009F434A /* fingerMIDI-Tests */,
 				D2144C8A2FC368F5009F434A /* Frameworks */,
 				D2972AF42FC160EC00FB1743 /* Products */,
 			);
@@ -160,8 +160,8 @@
 		D2972AF42FC160EC00FB1743 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */,
-				D21450293037EC88009F434A /* Percussion-to-MIDI-Tests.xctest */,
+				D2972AF32FC160EC00FB1743 /* fingerMIDI.app */,
+				D21450293037EC88009F434A /* fingerMIDI-Tests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -169,9 +169,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		D21450283037EC88009F434A /* Percussion-to-MIDI-Tests */ = {
+		D21450283037EC88009F434A /* fingerMIDI-Tests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D214502F3037EC89009F434A /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI-Tests" */;
+			buildConfigurationList = D214502F3037EC89009F434A /* Build configuration list for PBXNativeTarget "fingerMIDI-Tests" */;
 			buildPhases = (
 				D21450253037EC88009F434A /* Sources */,
 				D21450263037EC88009F434A /* Frameworks */,
@@ -183,18 +183,18 @@
 				D214502E3037EC89009F434A /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				D214502A3037EC88009F434A /* Percussion-to-MIDI-Tests */,
+				D214502A3037EC88009F434A /* fingerMIDI-Tests */,
 			);
-			name = "Percussion-to-MIDI-Tests";
+			name = "fingerMIDI-Tests";
 			packageProductDependencies = (
 			);
-			productName = "Percussion-to-MIDI-Tests";
-			productReference = D21450293037EC88009F434A /* Percussion-to-MIDI-Tests.xctest */;
+			productName = "fingerMIDI-Tests";
+			productReference = D21450293037EC88009F434A /* fingerMIDI-Tests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */ = {
+		D2972AF22FC160EC00FB1743 /* fingerMIDI */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D2972AFE2FC160EE00FB1743 /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI" */;
+			buildConfigurationList = D2972AFE2FC160EE00FB1743 /* Build configuration list for PBXNativeTarget "fingerMIDI" */;
 			buildPhases = (
 				D2972AEF2FC160EC00FB1743 /* Sources */,
 				D2972AF02FC160EC00FB1743 /* Frameworks */,
@@ -205,16 +205,16 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				D2972AF52FC160EC00FB1743 /* Percussion-to-MIDI */,
+				D2972AF52FC160EC00FB1743 /* fingerMIDI */,
 			);
-			name = "Percussion-to-MIDI";
+			name = "fingerMIDI";
 			packageProductDependencies = (
 				D2972C272FC2078800FB1743 /* SwiftMIDICore */,
 				D2972C292FC2078800FB1743 /* SwiftMIDIInternals */,
 				D2972C2C2FC207BA00FB1743 /* SwiftMIDIFile */,
 			);
-			productName = "Percussion-to-MIDI";
-			productReference = D2972AF32FC160EC00FB1743 /* Percussion-to-MIDI.app */;
+			productName = "fingerMIDI";
+			productReference = D2972AF32FC160EC00FB1743 /* fingerMIDI.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -236,7 +236,7 @@
 					};
 				};
 			};
-			buildConfigurationList = D2972AEE2FC160EC00FB1743 /* Build configuration list for PBXProject "Percussion-to-MIDI" */;
+			buildConfigurationList = D2972AEE2FC160EC00FB1743 /* Build configuration list for PBXProject "fingerMIDI" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -254,8 +254,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */,
-				D21450283037EC88009F434A /* Percussion-to-MIDI-Tests */,
+				D2972AF22FC160EC00FB1743 /* fingerMIDI */,
+				D21450283037EC88009F434A /* fingerMIDI-Tests */,
 			);
 		};
 /* End PBXProject section */
@@ -297,7 +297,7 @@
 /* Begin PBXTargetDependency section */
 		D214502E3037EC89009F434A /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = D2972AF22FC160EC00FB1743 /* Percussion-to-MIDI */;
+			target = D2972AF22FC160EC00FB1743 /* fingerMIDI */;
 			targetProxy = D214502D3037EC89009F434A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -313,7 +313,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				MACOSX_DEPLOYMENT_TARGET = 26.4;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI-Tests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.fingerMIDI-Tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -323,7 +323,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Percussion-to-MIDI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Percussion-to-MIDI";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/fingerMIDI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/fingerMIDI";
 				XROS_DEPLOYMENT_TARGET = 26.4;
 			};
 			name = Debug;
@@ -338,7 +338,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				MACOSX_DEPLOYMENT_TARGET = 26.4;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI-Tests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.fingerMIDI-Tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -348,7 +348,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Percussion-to-MIDI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Percussion-to-MIDI";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/fingerMIDI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/fingerMIDI";
 				XROS_DEPLOYMENT_TARGET = 26.4;
 			};
 			name = Release;
@@ -495,24 +495,24 @@
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Percussion-to-MIDI/RNBO/rnbo",
-					"$(SRCROOT)/Percussion-to-MIDI/RNBO",
+					"$(SRCROOT)/fingerMIDI/RNBO/rnbo",
+					"$(SRCROOT)/fingerMIDI/RNBO",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PercTranscriber records live audio input for transcription.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "fingerMIDI records live audio input for transcription.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.fingerMIDI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "Percussion-to-MIDI/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "fingerMIDI/BridgingHeader.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -542,24 +542,24 @@
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Percussion-to-MIDI/RNBO/rnbo",
-					"$(SRCROOT)/Percussion-to-MIDI/RNBO",
+					"$(SRCROOT)/fingerMIDI/RNBO/rnbo",
+					"$(SRCROOT)/fingerMIDI/RNBO",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PercTranscriber records live audio input for transcription.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "fingerMIDI records live audio input for transcription.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.Percussion-to-MIDI";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.fingerMIDI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "Percussion-to-MIDI/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "fingerMIDI/BridgingHeader.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -568,7 +568,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D214502F3037EC89009F434A /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI-Tests" */ = {
+		D214502F3037EC89009F434A /* Build configuration list for PBXNativeTarget "fingerMIDI-Tests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D21450303037EC89009F434A /* Debug */,
@@ -577,7 +577,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D2972AEE2FC160EC00FB1743 /* Build configuration list for PBXProject "Percussion-to-MIDI" */ = {
+		D2972AEE2FC160EC00FB1743 /* Build configuration list for PBXProject "fingerMIDI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D2972AFC2FC160EE00FB1743 /* Debug */,
@@ -586,7 +586,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D2972AFE2FC160EE00FB1743 /* Build configuration list for PBXNativeTarget "Percussion-to-MIDI" */ = {
+		D2972AFE2FC160EE00FB1743 /* Build configuration list for PBXNativeTarget "fingerMIDI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D2972AFF2FC160EE00FB1743 /* Debug */,

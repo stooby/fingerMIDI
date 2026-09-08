@@ -1,6 +1,6 @@
 //
-//  Percussion_to_MIDIApp.swift
-//  Percussion-to-MIDI
+//  fingerMIDI.swift
+//  fingerMIDI
 //
 //  Created by Scott Tooby on 5/22/26.
 //
@@ -8,7 +8,7 @@
 import SwiftUI
 
 @main
-struct Percussion_to_MIDIApp: App {
+struct fingerMIDIApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

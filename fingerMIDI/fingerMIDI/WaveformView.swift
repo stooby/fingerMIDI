@@ -1,6 +1,6 @@
 //
 //  WaveformView.swift
-//  Percussion-to-MIDI
+//  fingerMIDI
 //
 
 import SwiftUI

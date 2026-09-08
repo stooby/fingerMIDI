@@ -1,6 +1,6 @@
 //
 //  MIDIHelpersTests.swift
-//  Percussion-to-MIDI-Tests
+//  fingerMIDI-Tests
 //
 //  Tests for pairMIDIEventsForDisplay: the pure note-on/note-off pairing logic
 //  that turns raw RNBO MIDI event dicts into MIDINoteEvent notes for the overlay.
@@ -8,7 +8,7 @@
 //
 
 import XCTest
-@testable import Percussion_to_MIDI
+@testable import fingerMIDI
 
 final class MIDIHelpersTests: XCTestCase {
 

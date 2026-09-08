@@ -1,6 +1,6 @@
 //
 //  NumericInput.swift
-//  Percussion-to-MIDI
+//  fingerMIDI
 //
 //  Pure, UI-free numeric helpers. Kept free of SwiftUI/engine dependencies so
 //  they can be unit-tested directly (see NumericInputTests).

@@ -1,6 +1,6 @@
 //
 //  MIDI-Helpers.swift
-//  Percussion-to-MIDI
+//  fingerMIDI
 //
 //  Pure, UI/engine-free MIDI helpers. Kept free of SwiftUI/engine dependencies
 //  so they can be unit-tested directly against synthetic events.

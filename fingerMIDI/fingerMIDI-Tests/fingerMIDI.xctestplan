@@ -11,23 +11,23 @@
   "defaultOptions" : {
     "performanceAntipatternCheckerEnabled" : true,
     "targetForVariableExpansion" : {
-      "containerPath" : "container:Percussion-to-MIDI.xcodeproj",
+      "containerPath" : "container:fingerMIDI.xcodeproj",
       "identifier" : "D2972AF22FC160EC00FB1743",
-      "name" : "Percussion-to-MIDI"
+      "name" : "fingerMIDI"
     }
   },
   "testTargets" : [
     {
       "parallelizable" : true,
       "skippedTests" : [
-        "Percussion_to_MIDI_Tests",
-        "Percussion_to_MIDI_Tests\/testExample()",
-        "Percussion_to_MIDI_Tests\/testPerformanceExample()"
+        "fingerMIDI_Tests",
+        "fingerMIDI_Tests\/testExample()",
+        "fingerMIDI_Tests\/testPerformanceExample()"
       ],
       "target" : {
-        "containerPath" : "container:Percussion-to-MIDI.xcodeproj",
+        "containerPath" : "container:fingerMIDI.xcodeproj",
         "identifier" : "D21450283037EC88009F434A",
-        "name" : "Percussion-to-MIDI-Tests"
+        "name" : "fingerMIDI-Tests"
       }
     }
   ],

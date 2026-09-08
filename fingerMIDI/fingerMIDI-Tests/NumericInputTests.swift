@@ -1,12 +1,12 @@
 //
 //  NumericInputTests.swift
-//  Percussion-to-MIDI-Tests
+//  fingerMIDI-Tests
 //
 //  First unit tests: value clamping used by the numeric parameter fields.
 //
 
 import XCTest
-@testable import Percussion_to_MIDI
+@testable import fingerMIDI
 
 final class NumericInputTests: XCTestCase {
 

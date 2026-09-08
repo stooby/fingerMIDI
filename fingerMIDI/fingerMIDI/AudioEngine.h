@@ -1,6 +1,6 @@
 //
 //  AudioEngine.h
-//  Percussion-to-MIDI
+//  fingerMIDI
 //
 //  Created by Scott Tooby on 5/23/26.
 //

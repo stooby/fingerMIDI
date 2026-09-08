@@ -16,9 +16,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "D2972AF22FC160EC00FB1743"
-               BuildableName = "Percussion-to-MIDI.app"
-               BlueprintName = "Percussion-to-MIDI"
-               ReferencedContainer = "container:Percussion-to-MIDI.xcodeproj">
+               BuildableName = "fingerMIDI.app"
+               BlueprintName = "fingerMIDI"
+               ReferencedContainer = "container:fingerMIDI.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -30,7 +30,7 @@
       shouldUseLaunchSchemeArgsEnv = "YES">
       <TestPlans>
          <TestPlanReference
-            reference = "container:Percussion-to-MIDI-Tests/Percussion-to-MIDI.xctestplan"
+            reference = "container:fingerMIDI-Tests/fingerMIDI.xctestplan"
             default = "YES">
          </TestPlanReference>
       </TestPlans>
@@ -41,19 +41,19 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "D21450283037EC88009F434A"
-               BuildableName = "Percussion-to-MIDI-Tests.xctest"
-               BlueprintName = "Percussion-to-MIDI-Tests"
-               ReferencedContainer = "container:Percussion-to-MIDI.xcodeproj">
+               BuildableName = "fingerMIDI-Tests.xctest"
+               BlueprintName = "fingerMIDI-Tests"
+               ReferencedContainer = "container:fingerMIDI.xcodeproj">
             </BuildableReference>
             <SkippedTests>
                <Test
-                  Identifier = "Percussion_to_MIDI_Tests">
+                  Identifier = "fingerMIDI_Tests">
                </Test>
                <Test
-                  Identifier = "Percussion_to_MIDI_Tests/testExample()">
+                  Identifier = "fingerMIDI_Tests/testExample()">
                </Test>
                <Test
-                  Identifier = "Percussion_to_MIDI_Tests/testPerformanceExample()">
+                  Identifier = "fingerMIDI_Tests/testPerformanceExample()">
                </Test>
             </SkippedTests>
          </TestableReference>
@@ -75,9 +75,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "D2972AF22FC160EC00FB1743"
-            BuildableName = "Percussion-to-MIDI.app"
-            BlueprintName = "Percussion-to-MIDI"
-            ReferencedContainer = "container:Percussion-to-MIDI.xcodeproj">
+            BuildableName = "fingerMIDI.app"
+            BlueprintName = "fingerMIDI"
+            ReferencedContainer = "container:fingerMIDI.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -92,9 +92,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "D2972AF22FC160EC00FB1743"
-            BuildableName = "Percussion-to-MIDI.app"
-            BlueprintName = "Percussion-to-MIDI"
-            ReferencedContainer = "container:Percussion-to-MIDI.xcodeproj">
+            BuildableName = "fingerMIDI.app"
+            BlueprintName = "fingerMIDI"
+            ReferencedContainer = "container:fingerMIDI.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

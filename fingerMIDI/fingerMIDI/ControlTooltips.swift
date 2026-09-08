@@ -1,6 +1,6 @@
 //
 //  ControlTooltips.swift
-//  Percussion-to-MIDI
+//  fingerMIDI
 //
 //  Centralized control → tooltip strings. This is the single place to edit tooltips:
 //  call sites only attach `.tooltip("id")` (see the View extension below), so changing a
