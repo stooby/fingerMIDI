@@ -19,15 +19,15 @@
 			containerPortal = D2972AEB2FC160EC00FB1743 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = D2972AF22FC160EC00FB1743;
-			remoteInfo = "fingerMIDI";
+			remoteInfo = fingerMIDI;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		D2144C8B2FC368F5009F434A /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		D21450293037EC88009F434A /* fingerMIDI-Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "fingerMIDI-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		D2972AF32FC160EC00FB1743 /* fingerMIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "fingerMIDI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		D2FCABE23044D5C800596892 /* fingerMIDI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; name = "fingerMIDI.xctestplan"; path = "fingerMIDI-Tests/fingerMIDI.xctestplan"; sourceTree = "<group>"; };
+		D2972AF32FC160EC00FB1743 /* fingerMIDI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = fingerMIDI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2FCABE23044D5C800596892 /* fingerMIDI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; name = fingerMIDI.xctestplan; path = "fingerMIDI-Tests/fingerMIDI.xctestplan"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -111,7 +111,7 @@
 			exceptions = (
 				D2972C252FC16FF100FB1743 /* Exceptions for "fingerMIDI" folder in "fingerMIDI" target */,
 			);
-			path = "fingerMIDI";
+			path = fingerMIDI;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -207,13 +207,13 @@
 			fileSystemSynchronizedGroups = (
 				D2972AF52FC160EC00FB1743 /* fingerMIDI */,
 			);
-			name = "fingerMIDI";
+			name = fingerMIDI;
 			packageProductDependencies = (
 				D2972C272FC2078800FB1743 /* SwiftMIDICore */,
 				D2972C292FC2078800FB1743 /* SwiftMIDIInternals */,
 				D2972C2C2FC207BA00FB1743 /* SwiftMIDIFile */,
 			);
-			productName = "fingerMIDI";
+			productName = fingerMIDI;
 			productReference = D2972AF32FC160EC00FB1743 /* fingerMIDI.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -498,6 +498,7 @@
 					"$(SRCROOT)/fingerMIDI/RNBO/rnbo",
 					"$(SRCROOT)/fingerMIDI/RNBO",
 				);
+				INFOPLIST_KEY_CFBundleDisplayName = fingerMIDI;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "fingerMIDI records live audio input for transcription.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -505,14 +506,14 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.fingerMIDI";
+				PRODUCT_BUNDLE_IDENTIFIER = com.stooby.fingerMIDI;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "fingerMIDI/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = fingerMIDI/BridgingHeader.h;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -545,6 +546,7 @@
 					"$(SRCROOT)/fingerMIDI/RNBO/rnbo",
 					"$(SRCROOT)/fingerMIDI/RNBO",
 				);
+				INFOPLIST_KEY_CFBundleDisplayName = fingerMIDI;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "fingerMIDI records live audio input for transcription.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -552,14 +554,14 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.stooby.fingerMIDI";
+				PRODUCT_BUNDLE_IDENTIFIER = com.stooby.fingerMIDI;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "fingerMIDI/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = fingerMIDI/BridgingHeader.h;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 			};
