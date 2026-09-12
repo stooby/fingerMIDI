@@ -1,6 +1,6 @@
 # 👉fingerMIDI👈
 
-**fingerMIDI** is a simple 2-voice audio-to-MIDI finger percussion transcription app for macOS.
+**fingerMIDI** is a simple 2-voice audio-to-MIDI finger percussion transcription app for macOS - in active development.
 
 ![fingerMIDI screenshot](assets/fingerMIDI_screenshot_20260907.png)
 
@@ -18,7 +18,7 @@ The Max RNBO DSP code is made with [`SuperRNBO`](https://github.com/stooby/Super
 
 
 ## Quick Start 
-1. Import or record an audio file. (**hint**: see the [`/assets`](/assets) folder for test audio files)
+1. Import or record an audio file. (💁🏼‍♂️ **hint**: see the [`/fingerMIDI/fingerMIDI-Tests/TestFiles`](/fingerMIDI/fingerMIDI-Tests/TestFiles) folder for test audio files)
 2. Enable "Train", play for 5-10+ seconds, and disable "Train" to auto-set the Spectral Centroid/Flatness cutoffs. Or set the cutoffs manually yourself based on the histogram feedback during playback.
   - 💁🏼‍♂️ Hint: For better results, it's recommended to train on material that has two distinct low/kick and high/snare percussion timbres. Distinct timbres need to be heard during training in order for auto-set cutoff values to be meaningful.
 3. Adjust onset detection parameters if needed:

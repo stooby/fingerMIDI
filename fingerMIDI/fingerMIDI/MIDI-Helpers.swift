@@ -7,10 +7,94 @@
 //
 
 import Foundation
+import SwiftMIDIFile
+
+/// Converts raw RNBO MIDI event dictionaries into a Standard MIDI File (Format 0).
+/// This is the exact byte stream written by ContentView's "Export MIDI" — kept here,
+/// free of View/engine state, so the offline-render regression test can build the
+/// same file the app does (see `MIDITranscriptionTests`).
+///
+/// Timebase: 480 PPQ at 120 BPM → 1 tick ≈ 1.042 ms.
+/// Tick conversion: ticks = round(timestampMs × 480 × 120 / 60_000) = round(ms × 0.96).
+///
+/// RNBO emits fully-formed Note On (0x9x) and Note Off (0x8x) messages; both are passed
+/// through as-is. Zero-velocity Note On (treated as Note Off per MIDI spec) is also handled.
+///
+/// Unlike `pairMIDIEventsForDisplay`, no pairing happens here — the raw event stream is
+/// written faithfully, overlaps included.
+func buildMIDIFile(from rawEvents: [[String: Any]]) throws -> Data {
+    let bpm: Double = 120.0
+    let ppq: UInt16 = 480
+    let ticksPerMs = Double(ppq) * bpm / 60_000.0  // 0.96
+
+    // Sort events by timestamp before computing deltas.
+    let sorted = rawEvents.sorted {
+        let t0 = ($0["timestampMs"] as? Double) ?? 0.0
+        let t1 = ($1["timestampMs"] as? Double) ?? 0.0
+        return t0 < t1
+    }
+
+    var trackEvents: [MusicalMIDI1File.Track.Event] = []
+
+    // Tempo event at the start of the track.
+    trackEvents.append(.tempo(delta: .none, bpm: bpm))
+
+    var prevAbsTick: UInt32 = 0
+
+    for dict in sorted {
+        guard
+            let timestampMs = dict["timestampMs"] as? Double,
+            let bytes = dict["bytes"] as? Data,
+            bytes.count >= 1
+        else { continue }
+
+        let absTick = UInt32(max(0.0, (timestampMs * ticksPerMs).rounded()))
+        let deltaTick = absTick >= prevAbsTick ? absTick - prevAbsTick : 0
+        prevAbsTick = absTick
+
+        let status = bytes[0]
+        let statusNibble = status >> 4
+        let channel = status & 0x0F
+
+        guard
+            bytes.count >= 3,
+            let note = UInt7(exactly: bytes[1]),
+            let velocity = UInt7(exactly: bytes[2]),
+            let ch = UInt4(exactly: channel)
+        else { continue }
+
+        switch statusNibble {
+        case 0x9 where velocity > 0:
+            trackEvents.append(.noteOn(
+                delta: .ticks(deltaTick),
+                note: note,
+                velocity: .midi1(velocity),
+                channel: ch
+            ))
+        case 0x8, 0x9: // Note Off, or Note On with velocity 0
+            trackEvents.append(.noteOff(
+                delta: .ticks(deltaTick),
+                note: note,
+                velocity: .midi1(velocity),
+                channel: ch
+            ))
+        default:
+            break
+        }
+    }
+
+    let track = MusicalMIDI1File.Track(events: trackEvents)
+    let midiFile = MusicalMIDI1File(
+        format: .singleTrack,
+        timebase: .musical(ticksPerQuarterNote: ppq),
+        tracks: [track]
+    )
+    return try midiFile.rawData()
+}
 
 /// Pairs raw RNBO MIDI event dicts into `MIDINoteEvent` on/off matches for the
 /// on-screen note overlay. Does not affect exported MIDI — the .mid file is
-/// built from the raw events (see ContentView.buildMIDIFile).
+/// built from the raw events (see `buildMIDIFile(from:)` above).
 ///
 /// Each input dict is expected to carry `"timestampMs": Double` and
 /// `"bytes": Data` (a 3-byte MIDI status/note/velocity message). Events are
