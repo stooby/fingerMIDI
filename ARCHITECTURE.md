@@ -495,14 +495,23 @@ The overlay is populated from two sources:
 - **Offline analysis** — a full offline render pass triggered by "Analyze" or "Export MIDI"
 - **Real-time capture** — notes are accumulated into the overlay incrementally as the transport plays through the file
 
+#### Invariants
+
+These hold regardless of how the code below is organised, and most of the design follows from them:
+
+1. **One rectangle per detected onset, ever.** RNBO emits exactly one note per onset, so two rectangles at one onset is always a bug.
+2. **The overlay is a best-effort preview; the offline export is authoritative.** Dropping a preview note under load is acceptable; dropping an exported one is not.
+3. **The two passes disagree about onset time by several milliseconds.** Notes from different passes are therefore never matched by timestamp — provenance decides which survives.
+4. **Greying tracks onset tuning only.** Classification parameters change a note's pitch, not its validity, so they re-arm "Analyze" without marking anything stale.
+
 #### Visual design
 
 Two horizontal strips occupy the lower third of the waveform view. Each detected note is drawn as a semi-transparent filled rounded rectangle whose:
-- **x-position** scales `(onsetMs - midiLatencyCompensationMs) / totalDurationMs` by view width to a horizontal start coordinate, compensating for the RNBO patch's I/O processing latency so rectangles align visually with their waveform onsets (clamped to 0 so notes near the file start don't render off-screen)
-- **width** maps `durationMs / totalDurationMs` to view width (minimum 2 pt so zero-width events are still visible)
+- **x-position** maps the onset to view width, shifted left by the detection latency so rectangles align with their waveform onsets, and clamped to 0 so notes near the file start don't render off-screen
+- **width** maps the note duration to view width, with a floor so zero-length events stay visible
 - **y-position** is fixed per note number: D1 strip sits above the C1 strip, reflecting their relative pitch
 - **color** distinguishes the two drums: C1 (kick) in warm orange, D1 (snare) in cyan
-- **opacity / color shift** reflects freshness: **stale** notes (detected with now-changed parameters) are drawn in grey at 0.35 opacity; **fresh** notes use the full orange/cyan colors at 0.75 opacity
+- **freshness** is shown by colour: **stale** notes (detected with now-changed parameters) drop to translucent grey, fresh notes keep their orange/cyan
 
 The strips are drawn after the waveform lines and before the playhead line so both remain visible.
 
@@ -517,361 +526,86 @@ struct MIDINoteEvent {
     let onsetMs: Double
     let durationMs: Double
     var isStale: Bool = false
+    var generation: Int = 0
 }
 ```
 
-`isStale` is `false` for notes freshly produced by either an offline pass or real-time capture. It is set to `true` in bulk when onset tuning parameters change (see staleness marking below).
+`isStale` is `false` for notes freshly produced by either pass, and set `true` in bulk when onset tuning parameters change. `generation` identifies the pass that produced the note, letting real-time capture sweep notes left over from a superseded one; it is bookkeeping only and never drawn. Both are covered under *Populating the overlay* below.
 
 #### Note-pairing helper
 
-`pairMIDIEvents(_:) -> [MIDINoteEvent]` in `ContentView.swift` converts the raw `[[String: Any]]` from `collectAndClearMidiEvents()` into matched On/Off pairs. Used by the offline paths only (real-time pairing uses `pollRealTimeMidiEvents`, described below):
+`pairMIDIEventsForDisplay(_:)` in `MIDI-Helpers.swift` converts the raw event dictionaries the engine returns into matched on/off pairs for the overlay, sorted by onset. Used by the offline paths only; real-time capture pairs incrementally across poll intervals instead. Notes still open at the end of the stream are flushed with a short fallback duration.
 
-1. Sort events by `timestampMs`.
-2. Maintain a `[UInt8: (onsetMs: Double, velocity: UInt8)]` dictionary of open note-ons keyed by note number.
-3. On Note On (`status nibble 0x9`, `velocity > 0`): insert into the open-notes dict.
-4. On Note Off (`status nibble 0x8`, or Note On with `velocity == 0`): look up the matching open entry, compute `durationMs = offMs - onMs`, append a `MIDINoteEvent`, remove from dict.
-5. After the loop, flush any unclosed note-ons with a 50 ms fallback duration.
-6. Return sorted by `onsetMs`.
+A same-pitch note-on arriving while that pitch is still open (RNBO can double-trigger one hit at a low `Onset/mingap`) ends the open note at the new onset rather than dropping it, so the two render as adjacent blocks. This pairing is for display only — the exported `.mid` is built from the raw event stream, overlaps included.
 
-#### `AudioEngine` additions
+#### Engine support (`AudioEngine`)
 
-**`sampleRate` property** (added in the initial Step 14 implementation) — exposes the hardware sample rate needed to compute `totalDurationMs`:
+`MidiEventCapture` serves both consumers from one RNBO event handler, routed by an offline-mode flag. The two paths never run concurrently — an offline render stops the engine first — so a single flag is sufficient.
 
-```objc
-@property (readonly) double sampleRate;   // returns _engineSampleRate
-```
+- **`sampleRate`** — exposes the engine sample rate so `ContentView` can compute `totalDurationMs`.
+- **Real-time path** — events are written to a lock-free single-producer/single-consumer ring, drop-newest when full, so the render block never allocates and never locks. Overflow is acceptable: the overlay is a best-effort preview. `beginRealTimeCapture` resets the ring at the start of a fresh timeline (play start, seek); `collectAndClearRealTimeMidiEvents` drains it on the main thread.
+- **Offline path** — a mutex-guarded vector, collected once at the end of the render. Lossless, and RT-safety is irrelevant because no audio device is running. `collectAndClearMidiEvents` returns it.
+- **Timestamps are file-relative, stamped on the audio thread** in the block that produced the event, from that block's own playhead and RNBO-time base, then wrapped into `[0, totalDurationMs)` for the transport loop. Stamping per block rather than at poll time makes events inherently seek-immune: an event born before a seek keeps its pre-seek position. RNBO's own clock is cumulative and is never reset by `prepareToProcess`, so it can't be used directly — the offline path subtracts the RNBO time captured at render start for the same reason.
+- **Post-seek settling window** — after a seek, real-time capture is suppressed for exactly the detection latency, measured in RNBO-time. RNBO emits each event ~40 ms after the true onset, so without this an onset belonging to pre-seek audio would be stamped at the new playhead; the window also swallows the false triggers the seek discontinuity provokes. Setting it equal to the latency is optimal — longer starts dropping real post-seek onsets, shorter leaks pre-seek ones. Offline analysis is unaffected.
 
-**Real-time capture API** — two new methods for the real-time overlay path:
-
-```objc
-/// Call on the main thread immediately before start() and after setPlayheadPosition()
-/// when seeking during active playback. Records the current playhead frame and sets a
-/// flag for the render block to capture the matching RNBO engine time on the next
-/// process() call.
-- (void)beginRealTimeCapture;
-
-/// Returns MIDI events accumulated during real-time playback since the last call, with
-/// timestamps converted to file-relative milliseconds. Same dictionary format as
-/// collectAndClearMidiEvents(). Safe to call from the main thread.
-- (NSArray<NSDictionary<NSString *, id> *> *)collectAndClearRealTimeMidiEvents;
-```
-
-**Implementation — real-time timestamp anchor:** RNBO's time counter is cumulative and unrelated to the playhead position, so a per-session anchor is required to convert RNBO event timestamps to file-relative milliseconds. Three new ivars (all in the anonymous `@implementation` ivar block):
-
-```objc
-std::atomic<bool>     _needsRtAnchor;         // set by beginRealTimeCapture, cleared by render block
-std::atomic<int64_t>  _rtAnchorPlayheadFrame; // playhead frame at beginRealTimeCapture time
-std::atomic<uint64_t> _rtAnchorRnboTimeBits;  // RNBO engine time captured by render block
-                                               // (IEEE 754 double stored as uint64_t for atomic access)
-```
-
-`beginRealTimeCapture` (main thread): stores `_playhead` into `_rtAnchorPlayheadFrame`, then sets `_needsRtAnchor = true`.
-
-Render block: on the first block after `_needsRtAnchor` is true and `_isPlaying` is true, captures `core->getCurrentTime()` (before `process()` advances time), stores it as bit-cast `uint64_t`, clears the flag. Uses captured raw pointers (`needsRtAnchorPtr`, `rtAnchorBitsPtr`) to avoid implicitly capturing `self` in the block.
-
-`collectAndClearRealTimeMidiEvents` (main thread): reads both anchor values, computes `fileRelativeMs = anchorFileMs + (rnboEventTime - anchorRnboMs)` where `anchorFileMs = anchorPlayheadFrame / sampleRate * 1000`, then drains and converts all accumulated events.
-
-The shared `_midiCapture` buffer is safe to use for both paths: `_runOfflineLoopWritingTo:` calls `collectAndClear()` at its start to discard any accumulated real-time events, and offline renders only run after `stopForOfflineRender()` halts the audio engine.
+The detection latency lives in `AudioEngine` as the single source of truth (`kRnboProcessingLatencyMs`, exposed as `processingLatencyMs`), because both the settling window and the overlay's visual left-shift depend on it and must never drift apart. It is a hardcoded placeholder; a future update feeds it from the patch's `processingLatency` outport.
 
 #### `WaveformView` update
 
-`midiNotes: [MIDINoteEvent]` and `totalDurationMs: Double` parameters added. Drawing pass between waveform stroke and playhead line.
+Takes the note array and `totalDurationMs`, and draws the overlay between the waveform stroke and the playhead line.
 
-**Latency compensation** — the RNBO patch's I/O processing introduces a consistent delay between a physical onset and the MIDI note timestamp it emits (empirically ~40 ms). Without compensation the overlay rectangles land visibly to the right of their waveform onsets. Two additions handle this:
+**Latency compensation** — RNBO emits a note some tens of milliseconds after the physical onset, so without compensation every rectangle lands visibly right of its waveform peak. `WaveformView` shifts each rectangle left by `midiLatencyCompensationMs`, which `ContentView` supplies from `engine.processingLatencyMs`. The view holds no latency constant of its own.
 
-- `private let rnboProcessingLatencyMs: Double = 40.0` — file-scope constant (hardcoded fallback). When a future update adds a `processingLatency` outport to the RNBO patch, replace this with the dynamic value passed through `midiLatencyCompensationMs`.
-- `var midiLatencyCompensationMs: Double = rnboProcessingLatencyMs` — `WaveformView` property. Defaults to the constant so no call-site changes are required today; callers can pass a dynamic value later without any structural changes.
+#### `ContentView` — overlay state
 
-> **Superseded by Step 14.35:** the latency figure was moved to `AudioEngine` as the single source of truth
-> (`kRnboProcessingLatencyMs`, exposed via the `processingLatencyMs` property). `WaveformView` no longer holds
-> `rnboProcessingLatencyMs`; `midiLatencyCompensationMs` is now a required input, passed by `ContentView` as
-> `engine.processingLatencyMs`. The snippet below reflects the original Step-14 form.
+`midiNoteOverlay` is the single array `WaveformView` renders. Three kinds of state support it:
 
-The x-position formula shifts each onset left by the latency amount and clamps to zero:
+- **Pass identity** — `overlayGeneration` names the pass currently being captured, and `lastSweptFrontierMs` records how far the sweep has consumed. The generation is bumped when an offline pass finishes and when an analysis-affecting parameter changes; it is deliberately *not* bumped by play/stop, so pausing and resuming keeps the current pass's notes.
+- **Parameter snapshots** — `lastAnalyzedOnsetParams` (last offline pass) and `lastOverlayOnsetParams` (whenever the overlay was last populated, by either path). Both are compared against live parameter values to decide what is dirty.
+- **Real-time bookkeeping** — `openRealTimeNoteOns` holds note-ons awaiting their note-off across poll intervals, and `realTimeCoverageMs` accumulates how much of the file has been played with the current parameters.
 
-```swift
-// file-scope constant (WaveformView.swift)
-private let rnboProcessingLatencyMs: Double = 40.0
+**Parameter sets.** Onset tuning parameters (`thresh`, `relaxtime`, `floor`, `mingap`, `medspan`) change *whether and when* an onset is detected. The spectral cutoffs change only *which pitch* it is classified as. Their union is what makes a fresh "Analyze" worthwhile. `Onset/enable` and `Onset/needs_init` belong to neither — toggling them changes nothing about detection. This split is the reason for three dirty flags rather than one: "Analyze" enablement and coverage track the union, while stale-marking tracks onset tuning alone, so fine-tuning a cutoff re-arms "Analyze" without greying an overlay whose notes are still correctly placed.
 
-// WaveformView property
-var midiLatencyCompensationMs: Double = rnboProcessingLatencyMs
+#### Populating the overlay
 
-// drawing loop
-if !midiNotes.isEmpty && totalDurationMs > 0 {
-    let stripHeight: CGFloat = 12
-    let yForNote: (UInt8) -> CGFloat = { note in
-        note == 38 ? size.height * 0.68 : size.height * 0.84
-    }
-    for noteEvent in midiNotes {
-        let x = max(0, size.width * ((noteEvent.onsetMs - midiLatencyCompensationMs) / totalDurationMs))
-        let w = max(2, size.width * (noteEvent.durationMs / totalDurationMs))
-        let y = yForNote(noteEvent.note) - stripHeight / 2
-        let rect = CGRect(x: x, y: y, width: w, height: stripHeight)
-        let color: Color = noteEvent.isStale
-            ? Color.gray.opacity(0.35)
-            : (noteEvent.note == 38
-                ? Color(red: 0.2, green: 0.85, blue: 0.9).opacity(0.75)   // D1 snare: cyan
-                : Color(red: 1.0, green: 0.45, blue: 0.1).opacity(0.75))  // C1 kick:  orange
-        context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color))
-    }
-}
-```
+**Offline passes** ("Analyze", "Export MIDI") replace the overlay wholesale. The paired notes are stamped with the current generation, which is then closed out so any later real-time capture is strictly newer. Both parameter snapshots are set from the values captured before the render, leaving nothing dirty.
 
-#### `ContentView` changes
+**Real-time capture** runs on a 15 fps poll while the transport plays. Each poll drains the engine's ring, pairs note-ons with note-offs across poll boundaries, merges completed notes, and sweeps superseded ones. Notes still open when the transport stops are flushed with a fallback duration so the last hit isn't lost.
 
-**State:**
+Merging a real-time note replaces any existing note within a tight window (a few ms) of the same onset, which is what keeps a looping transport from accumulating duplicates. **Matching is by onset time only, never by pitch** — RNBO emits exactly one note per detected onset, so at most one rectangle may occupy an onset; matching pitch too would strand the old rectangle whenever a replay re-classified an onset.
 
-```swift
-@State private var midiNoteOverlay: [MIDINoteEvent] = []
-@State private var isMIDIAnalyzing: Bool = false
-// nil = no analysis has run yet for the currently loaded file. Drives button enabled state only.
-@State private var lastAnalyzedOnsetParams: [String: Float]? = nil
-// Snapshot of onset tuning params in effect when midiNoteOverlay was last populated,
-// by either offline analysis or real-time capture. Drives stale marking independently
-// of lastAnalyzedOnsetParams (see implementation note on staleness marking below).
-@State private var lastOverlayOnsetParams: [String: Float]? = nil
-// Tracks real-time note-on events awaiting their matching note-off across polling intervals.
-@State private var openRealTimeNoteOns: [UInt8: (onsetMs: Double, velocity: UInt8)] = [:]
-// Accumulated real-time playback duration (ms) since the last reset event (param change,
-// seek without full coverage, or file import). When >= totalDurationMs, the entire file
-// has been processed in real-time with the current params, making an offline pass redundant.
-@State private var realTimeCoverageMs: Double = 0
-```
+**The superseded-note sweep** removes notes from older generations across the band of file time the playhead covered since the previous poll — wrap-aware for the transport loop, and re-anchored after a seek so a jump never sweeps the region it skipped. Notes outside that band, including everything ahead of the playhead, are untouched: a superseded note stays on screen until playback actually passes over it again. The sweep runs on every poll, not only when notes were added, so superseded rectangles also clear across stretches the new pass detects nothing in.
 
-**Constants:**
+Provenance decides this rather than timestamp proximity because **the two passes disagree about when an onset happened.** Real-time capture stamps an onset ~8 ms later than an offline render does — real-time detection runs several analysis hops behind, and the phase shifts on every seek and loop wrap — which is far outside the merge window. Within a single pass RNBO is deterministic and timestamps agree to well under a millisecond, which is why merge-by-time is still the right tool there.
 
-```swift
-// The five onset tuning parameters that determine overlay staleness.
-// Onset/enable and Onset/needs_init are excluded — they don't alter detection sensitivity.
-private static let onsetTuningParamIds: Set<String> = [
-    "Onset/thresh", "Onset/relaxtime", "Onset/floor", "Onset/mingap", "Onset/medspan"
-]
+**Staleness marking** greys every note in place when onset tuning parameters drift from the snapshot taken when the overlay was populated, preserving each note's generation. A separate observer resets coverage and bumps the generation on the wider analysis set.
 
-// Half-width of the time window (ms) for matching a fresh real-time note against an
-// existing overlay note of the same pitch during loop overlap-replacement.
-// Kept tight (5 ms) because RNBO DSP is deterministic — the same onset recurs at
-// virtually the same timestamp on every loop.
-private static let realtimeNoteReplaceWindowMs: Double = 5.0
-```
-
-**Computed properties and helpers:**
-
-`paramsChanged(from:)` — shared comparison logic used by both dirty properties:
-
-```swift
-private func paramsChanged(from snapshot: [String: Float]) -> Bool {
-    for (i, param) in store.params.enumerated()
-        where Self.onsetTuningParamIds.contains(param.rnboId)
-    {
-        if abs((snapshot[param.rnboId] ?? Float.nan) - store.values[i]) > 0.0001 { return true }
-    }
-    return false
-}
-```
-
-`currentOnsetParamSnapshot()` — captures the current onset tuning param values; used by offline analysis, export, and real-time polling:
-
-```swift
-private func currentOnsetParamSnapshot() -> [String: Float] {
-    var snapshot: [String: Float] = [:]
-    for (i, param) in store.params.enumerated()
-        where Self.onsetTuningParamIds.contains(param.rnboId)
-    {
-        snapshot[param.rnboId] = store.values[i]
-    }
-    return snapshot
-}
-```
-
-`onsetParamsDirty` — drives the "Analyze" button enabled state only. Returns `true` when no offline analysis has run yet for the current file, or when params have drifted from the last offline snapshot:
-
-```swift
-private var onsetParamsDirty: Bool {
-    guard let last = lastAnalyzedOnsetParams else { return true }
-    return paramsChanged(from: last)
-}
-```
-
-`overlayParamsDirty` — drives stale marking. Compares against `lastOverlayOnsetParams` (set by both offline and real-time paths) so that real-time-only notes also grey out on param changes:
-
-```swift
-private var overlayParamsDirty: Bool {
-    guard let last = lastOverlayOnsetParams else { return false }
-    return paramsChanged(from: last)
-}
-```
-
-`fullRealTimeCoverageAchieved` — `true` when the entire file has been processed in real-time with the current onset params, making an explicit offline pass redundant. Resets to `false` on param change, file import, or seek before full coverage:
-
-```swift
-private var fullRealTimeCoverageAchieved: Bool {
-    totalDurationMs > 0 && realTimeCoverageMs >= totalDurationMs && !midiNoteOverlay.isEmpty
-}
-```
-
-**Staleness marking** — `.onChange(of: overlayParamsDirty)` modifier on the root `VStack`. When the value transitions to `true`, all overlay notes are re-mapped with `isStale: true` and `realTimeCoverageMs` is reset (param change invalidates any accumulated coverage):
-
-```swift
-.onChange(of: overlayParamsDirty) { _, isDirty in
-    if isDirty && !midiNoteOverlay.isEmpty {
-        midiNoteOverlay = midiNoteOverlay.map {
-            MIDINoteEvent(note: $0.note, velocity: $0.velocity,
-                          onsetMs: $0.onsetMs, durationMs: $0.durationMs, isStale: true)
-        }
-    }
-    if isDirty { realTimeCoverageMs = 0 }
-}
-```
-
-**File import** — no auto-analysis. The overlay, both snapshots, and the coverage counter are cleared; `onsetParamsDirty` returns `true` (nil snapshot), enabling "Analyze" immediately:
-
-```swift
-midiNoteOverlay = []
-lastAnalyzedOnsetParams = nil
-lastOverlayOnsetParams = nil
-openRealTimeNoteOns.removeAll()
-realTimeCoverageMs = 0
-```
-
-**Play/stop button** — calls `beginRealTimeCapture()` before `start()` on play; flushes open real-time notes on stop:
-
-```swift
-if isPlaying {
-    engine.stop()
-    flushOpenRealTimeNotes()
-} else {
-    engine.beginRealTimeCapture()
-    engine.start()
-    store.pushAllValuesToEngine()
-}
-```
-
-**Seek callback** — re-anchors timestamps and clears open notes. Coverage is only reset if full coverage has not yet been achieved: seeking after the whole file has already been processed in real-time is purely navigation and should not re-enable "Analyze":
-
-```swift
-engine.setPlayheadPosition(Int64(fraction * Double(engine.totalFrameCount)))
-engine.beginRealTimeCapture()
-openRealTimeNoteOns.removeAll()
-if !fullRealTimeCoverageAchieved { realTimeCoverageMs = 0 }
-```
-
-**Real-time MIDI polling** — 15 fps timer fires while `isPlaying`. Each tick accumulates `1000/15` ms (~66.7 ms) toward `realTimeCoverageMs`:
-
-```swift
-.onReceive(Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()) { _ in
-    guard isPlaying else { return }
-    realTimeCoverageMs += 1000.0 / 15.0
-    pollRealTimeMidiEvents()
-}
-```
-
-**Real-time helpers:**
-
-`mergeRealTimeNote(_:)` — inserts a fresh note, removing any same-pitch note within `realtimeNoteReplaceWindowMs` first (handles loop-iteration replacement):
-
-```swift
-private func mergeRealTimeNote(_ note: MIDINoteEvent) {
-    let window = Self.realtimeNoteReplaceWindowMs
-    midiNoteOverlay.removeAll { existing in
-        existing.note == note.note && abs(existing.onsetMs - note.onsetMs) <= window
-    }
-    midiNoteOverlay.append(note)
-}
-```
-
-`pollRealTimeMidiEvents()` — drains newly accumulated real-time events, pairs note-ons and note-offs across polling intervals, and merges completed notes into the overlay. After any note is successfully added, `lastOverlayOnsetParams` is updated so that a subsequent param change will trigger `overlayParamsDirty`'s `false → true` transition:
-
-```swift
-private func pollRealTimeMidiEvents() {
-    let rawEvents = engine.collectAndClearRealTimeMidiEvents() ?? []
-    var addedAnyNote = false
-    for dict in rawEvents {
-        guard let ms = dict["timestampMs"] as? Double,
-              let bytes = dict["bytes"] as? Data, bytes.count >= 3 else { continue }
-        let statusNibble = bytes[0] >> 4
-        let note = bytes[1]; let velocity = bytes[2]
-        if statusNibble == 0x9 && velocity > 0 {
-            openRealTimeNoteOns[note] = (onsetMs: ms, velocity: velocity)
-        } else if statusNibble == 0x8 || (statusNibble == 0x9 && velocity == 0) {
-            if let entry = openRealTimeNoteOns[note] {
-                mergeRealTimeNote(MIDINoteEvent(note: note, velocity: entry.velocity,
-                    onsetMs: entry.onsetMs, durationMs: ms - entry.onsetMs, isStale: false))
-                openRealTimeNoteOns.removeValue(forKey: note)
-                addedAnyNote = true
-            }
-        }
-    }
-    if addedAnyNote { lastOverlayOnsetParams = currentOnsetParamSnapshot() }
-}
-```
-
-`flushOpenRealTimeNotes()` — called on transport stop and when `stopTransportIfNeeded()` is used before offline exports. Closes any still-open note-ons with a 50 ms fallback duration and updates `lastOverlayOnsetParams` if any were flushed:
-
-```swift
-private func flushOpenRealTimeNotes() {
-    var flushedAny = false
-    for (note, entry) in openRealTimeNoteOns {
-        mergeRealTimeNote(MIDINoteEvent(note: note, velocity: entry.velocity,
-            onsetMs: entry.onsetMs, durationMs: 50, isStale: false))
-        flushedAny = true
-    }
-    openRealTimeNoteOns.removeAll()
-    if flushedAny { lastOverlayOnsetParams = currentOnsetParamSnapshot() }
-}
-```
-
-**`analyzeMIDI()` method** — uses `currentOnsetParamSnapshot()` to capture the param snapshot before dispatching. On completion, sets both `lastAnalyzedOnsetParams` and `lastOverlayOnsetParams` to the same snapshot, so both `onsetParamsDirty` and `overlayParamsDirty` return `false` until the user changes a param.
-
-**`exportMIDIOffline()`** — same snapshot behaviour as `analyzeMIDI`: updates `midiNoteOverlay`, `lastAnalyzedOnsetParams`, and `lastOverlayOnsetParams` from the same event batch at no extra cost.
-
-**"Analyze" button** — enabled when `onsetParamsDirty` is true (no offline analysis yet, or params have changed), and additionally disabled when `fullRealTimeCoverageAchieved` is true (full file already processed in real-time with current params):
-
-```swift
-Button("Analyze") { analyzeMIDI() }
-    .buttonStyle(.bordered)
-    .disabled(!fileLoaded || isPlaying || isExporting || isMIDIAnalyzing
-              || !onsetParamsDirty || fullRealTimeCoverageAchieved)
-```
+**"Analyze" enablement** — offered when the analysis parameters differ from the last offline pass (or none has run), and withdrawn once the whole file has been covered in real time at the current settings, since an offline pass would then be redundant. Transport and export activity disable it outright.
 
 #### Trigger and staleness summary
 
 | Event | Overlay | `isStale` | `realTimeCoverageMs` | Button state |
 |---|---|---|---|---|
 | App launch, no file | Empty | — | 0 | Disabled (no file) |
-| File imported | Cleared | — | 0 | **Enabled** (no analysis yet) |
-| Transport playing | Notes accumulate in real-time | `false` | Accumulating | Unchanged |
+| File imported | Cleared; generation reset | — | 0 | **Enabled** (no analysis yet) |
+| Transport playing | Notes accumulate in real-time; superseded notes swept as the playhead passes them | `false` | Accumulating | Unchanged |
 | Loop iteration | Same-position notes replaced | `false` | Accumulating | Unchanged |
 | Full file played through in real-time | Complete | `false` | ≥ `totalDurationMs` | **Disabled** (full coverage) |
-| Seek before full coverage | Unchanged | Unchanged | Reset to 0 | Unchanged |
-| Seek after full coverage | Unchanged | Unchanged | Unchanged | Unchanged (still disabled) |
+| Seek before full coverage | Unchanged; sweep re-anchors | Unchanged | Reset to 0 | Unchanged |
+| Seek after full coverage | Unchanged; sweep re-anchors | Unchanged | Unchanged | Unchanged (still disabled) |
 | Transport stopped | Open note-ons flushed | `false` | Unchanged | Unchanged |
-| Onset tuning param changed | All notes marked stale | `true` | Reset to 0 | **Enabled** |
+| Onset tuning param changed | All notes marked stale; generation bumped | `true` | Reset to 0 | **Enabled** |
+| Spectral cutoff changed | Unchanged; generation bumped | Unchanged | Reset to 0 | **Enabled** |
 | `Onset/enable` / `Onset/needs_init` toggled | Unchanged | Unchanged | Unchanged | Unchanged |
-| **Analyze** pressed | Replaced by offline result | `false` | Unchanged | Disabled (up-to-date) |
-| **Export MIDI** pressed | Replaced from same event batch | `false` | Unchanged | Disabled (up-to-date) |
-| New file imported | Cleared | — | 0 | **Enabled** (no analysis yet) |
+| **Analyze** pressed | Replaced by offline result; generation bumped | `false` | Unchanged | Disabled (up-to-date) |
+| **Export MIDI** pressed | Replaced from same event batch; generation bumped | `false` | Unchanged | Disabled (up-to-date) |
+| New file imported | Cleared; generation reset | — | 0 | **Enabled** (no analysis yet) |
 
-#### Implementation note — RNBO timestamp normalisation
+#### Constraint — why stale marking needs its own snapshot
 
-**Discovered during implementation.** RNBO's engine time counter is absolute and cumulative: `prepareToProcess(sr, blockSize, reset=true)` resets DSP state but does **not** reset the time counter. Event timestamps from `MidiEvent::getTime()` therefore reflect elapsed wall time since the `CoreObject` was constructed, not the position within the current file.
+SwiftUI's `.onChange(of:)` fires only on a *transition*, not while a value merely remains `true`. The "Analyze" flag is already `true` before any offline pass has run (nil snapshot), so it can never provide that transition for an overlay built purely from real-time capture — the notes would stay coloured forever.
 
-Without correction, every rectangle mapped to `onsetMs / totalDurationMs > 1.0`, placing all rectangles off-screen to the right. The same bug also caused exported MIDI files to have a large silence before the first note.
-
-**Offline fix:** `_offlineRenderStartMs` is captured via `_coreObject.getCurrentTime()` immediately after the pre-warm block. `collectAndClearMidiEvents` subtracts this offset from every event timestamp.
-
-**Real-time fix:** `_rtAnchorRnboTimeBits` / `_rtAnchorPlayheadFrame` are set per-session (on play start and after each seek). `collectAndClearRealTimeMidiEvents` computes `fileRelativeMs = anchorFileMs + (rnboTime - anchorRnboMs)`.
-
-A secondary issue arises from transport looping: the render block loops the playhead back to frame 0 at end-of-file, but RNBO time keeps advancing monotonically. Without correction, post-wrap events produce `fileRelativeMs > totalDurationMs`, mapping all rectangles off the right edge of the waveform. The fix is a single `fmod(ms, totalMs)` applied to each computed timestamp before it is returned — this maps the value back into `[0, totalMs)` for any number of loop iterations.
-
-#### Implementation note — staleness marking and the `.onChange` transition requirement
-
-**Discovered during testing.** `.onChange(of:)` in SwiftUI only fires when the observed value *transitions* — it is a no-op if the value is already `true` when a param changes.
-
-Before the first offline analysis, `lastAnalyzedOnsetParams` is `nil`, so `onsetParamsDirty` returns `true` unconditionally. After drawing real-time notes and then changing a param, `onsetParamsDirty` was already `true` and stays `true` — no transition occurs and `.onChange(of: onsetParamsDirty)` never fires, leaving the notes colored instead of greyed out.
-
-**Fix:** stale marking is driven by a separate `overlayParamsDirty` computed property backed by `lastOverlayOnsetParams`. This snapshot is set to the current params whenever notes are added to the overlay (by `pollRealTimeMidiEvents`, `flushOpenRealTimeNotes`, `analyzeMIDI`, or `exportMIDIOffline`). Because `lastOverlayOnsetParams` reflects the params actually in effect when the overlay was populated, `overlayParamsDirty` starts `false` after notes are drawn and transitions to `true` only when params subsequently change — giving `.onChange` the transition it needs in all cases.
-
-`onsetParamsDirty` is retained unchanged and continues to drive only the "Analyze" button enabled state via `lastAnalyzedOnsetParams` (offline-analysis-only snapshot).
+Stale marking therefore hangs off `lastOverlayOnsetParams`, a snapshot refreshed whenever notes are added to the overlay by *either* path. It reads `false` immediately after notes are drawn and flips to `true` only when parameters subsequently change, which is the transition the observer needs. The "Analyze" flag keeps its own offline-only snapshot.
 
 #### Verification
 
@@ -881,256 +615,12 @@ Before the first offline analysis, `lastAnalyzedOnsetParams` is `nil`, so `onset
 4. Let transport loop → previously detected real-time notes are replaced in-place on each loop (total count stays stable, not accumulating indefinitely).
 5. Change an onset tuning parameter → all overlay rectangles turn grey/translucent immediately; "Analyze" re-enables.
 6. Resume playback → fresh real-time detections (at the new parameter values) replace stale grey notes as the playhead passes through them.
-7. Press **Analyze** → entire overlay replaced by fresh offline results; all notes return to full color; button disables.
-8. Toggle `Onset/enable` or `Onset/needs_init` → overlay and button state unchanged.
-9. Press **Export MIDI** → exported file and overlay both reflect the same event set; button disables.
-10. Seek by clicking/dragging the waveform → overlay rectangles remain at their file-relative positions; timestamp anchor resets for subsequent real-time capture.
-11. Import a second file → overlay clears; "Analyze" immediately enables.
-
----
-
-### Step 14.25 - Make MIDI Note Overlay RT Safe (IMPLEMENTED)
-
-Hardens the Step-14 MIDI capture against real-time audio-thread violations, and establishes the lock-free
-buffering pattern reused by Step 14.5's spectral capture. Verified against the live code (not just this doc);
-the four refinements below (API split, ring reset, mode-flip ordering, retained offline mutex) came out of
-that review.
-
-#### Motivation — two RT violations in the render block
-
-`MidiEventCapture` (Step 14) buffers outgoing `RNBO::MidiEvent`s in a `std::mutex`-guarded `std::vector`,
-pushed from `handleMidiEvent` and swapped out by `collectAndClear()` on the main thread. `handleMidiEvent`
-runs on the **real-time audio render thread** — it is invoked from `_midiCapture.drain()`, called right
-after `core->process()` inside the `AVAudioSourceNode` render block. Two operations there violate real-time
-audio safety:
-
-1. **`std::vector::push_back` can `malloc`.** When the vector outgrows its capacity it reallocates on the
-   audio thread — an unbounded, lock-taking operation. Dormant today only because MIDI events are sparse; a
-   dense onset burst, or a main-thread stall that lets the vector fill between drains, can trigger it.
-2. **`std::mutex` on the audio thread** risks priority inversion: if the main thread is preempted mid-
-   `collectAndClear`, the render block blocks on the lock. The critical section is a pointer swap (tiny), so
-   the window is small — but it is not lock-free.
-
-Neither is currently audible, but both are latent glitch sources that worsen as event density rises. This
-step replaces the *real-time* transport with a **lock-free single-producer/single-consumer (SPSC) ring
-buffer** (the JUCE `AbstractFifo` pattern) so the render block never allocates and never locks.
-`RNBO::MidiEvent` is default-constructible and trivially copyable (plain value type — `RNBO_MidiEvent.h`),
-so a preallocated fixed-size array of slots is valid.
-
-#### The offline-lossless constraint
-
-`MidiEventCapture` feeds two consumers with opposite needs:
-
-| Consumer | Thread | RT-safe required? | Lossless required? |
-|---|---|---|---|
-| Real-time overlay (`collectAndClearRealTimeMidiEvents`) | render block → main | **yes** | no — best-effort live preview |
-| Offline MIDI export (`collectAndClearMidiEvents`) | offline loop (background) | no — no audio device | **yes — every event must survive** |
-
-A fixed ring that drops on overflow is perfect for the preview but wrong for the export. The two paths are
-**temporally exclusive** — `analyzeMIDI`/`exportMIDIOffline` call `-stopForOfflineRender` (which stops the
-engine, halting the render block) on the main thread, dispatch `renderOfflineMIDI` + `collectAndClearMidiEvents`
-to a background queue, then `-resumeAfterOfflineRender` on main. The render block is never running during the
-offline loop, so a single mode flag routes `handleMidiEvent` to the correct buffer:
-
-- **Real-time mode (default):** `handleMidiEvent` writes to the **lock-free SPSC ring** (drop-newest when
-  full). The render block is allocation- and lock-free. Overflow is acceptable — the real-time overlay is a
-  best-effort preview, and the *authoritative* MIDI is produced by the offline export.
-- **Offline mode:** `handleMidiEvent` writes to the **existing `std::mutex`-guarded `std::vector`,
-  unchanged**, collected once at loop end. `malloc` and the mutex are fine here — the offline loop runs on a
-  background thread with no real-time deadline, where the producer (`drain()`) and consumer
-  (`collectAndClearMidiEvents`) are the *same* thread, so the mutex is uncontended. **The proven Step-14
-  offline collection path is untouched** (refinement D).
-
-`setOfflineMode(bool)` (a `std::atomic<bool>`) is toggled alongside the existing `_paramCapture.setDeliveryEnabled`
-brackets: **`true` in `-stopForOfflineRender`, `false` in `-resumeAfterOfflineRender` before `[_engine start]`**
-(refinement C) so the resumed render block is already in real-time mode on its first callback — otherwise a
-few stray RT events could dribble into the offline vector. On the audio thread the flag is read
-`memory_order_relaxed` — one cheap branch per event.
-
-#### Ring buffer design
-
-- Fixed capacity `kEventRingCapacity = 2048`, a **power of two** so index wrap is a bitmask
-  (`i & (kEventRingCapacity - 1)`), not a modulo. Backed by a preallocated `RNBO::MidiEvent[kEventRingCapacity]`.
-- `std::atomic<size_t> _writeIdx, _readIdx`. Strict SPSC: the **producer** (audio thread) owns `_writeIdx`,
-  the **consumer** (main thread) owns `_readIdx` — neither index is written by both threads.
-  - **Produce** (`handleMidiEvent`, real-time mode): `next = (_writeIdx + 1) & mask`; if
-    `next == _readIdx.load(acquire)` the ring is full → **drop the incoming event** (drop-newest keeps the
-    producer from ever touching `_readIdx`, preserving strict SPSC); else store the event at `_writeIdx`,
-    then `_writeIdx.store(next, release)`.
-  - **Consume** (`drainRealTimeRing()`, main thread): snapshot `w = _writeIdx.load(acquire)`, copy
-    `[_readIdx, w)` (with wrap) into the returned `std::vector`, then `_readIdx.store(w, release)`. The
-    returned vector's allocation happens on the main thread — never on the producer side.
-- **Capacity rationale:** the onset detector's `Min Gap` parameter bounds the onset rate at the source
-  (default 20 ms → ≤ 50 onsets/s → ≤ 100 MIDI ev/s; a 5 ms floor → ≤ 200 onsets/s → ≤ 400 ev/s). The
-  consumer drains at 15 fps, so normal occupancy is single digits. 2048 slots absorb **~5–20 s of complete
-  main-thread unresponsiveness** at those rates before a single event is dropped — well past the point the
-  app is effectively hung. Cost: 2048 × sizeof(`RNBO::MidiEvent`) ≈ a few tens of KB. Dropping only ever
-  affects the live preview, never the export.
-- **Note-pairing under overflow:** a drop can orphan a note-on/note-off pair in the preview, but only during
-  extreme overflow (a multi-second stall); the overlay's re-detection/replacement and `flushOpenRealTimeNotes`
-  self-heal it on the next loop. Acceptable for a best-effort preview.
-
-#### API split + ring lifecycle (refinements A & B)
-
-Today one C++ `collectAndClear()` serves four call sites. Split it in two:
-
-- **`drainRealTimeRing()`** — drains the ring; called only by `-collectAndClearRealTimeMidiEvents` (the RT
-  overlay poll, main thread). The anchor-based timestamp math in that ObjC method is unchanged; only its
-  source (ring vs. vector) changes.
-- **`collectAndClear()`** (vector, retained as-is) — called by `-collectAndClearMidiEvents` (offline export)
-  and the two internal offline discards (pre-`prepareToProcess` cleanup and pre-warm discard). All three are
-  offline-mode, so they correctly target the vector.
-
-- **Ring reset in `-beginRealTimeCapture`.** Because RT and offline now use *separate* buffers, the offline
-  loop's "discard any real-time-phase events" step no longer clears leftovers sitting in the **ring**.
-  `-beginRealTimeCapture` is the fresh-timeline hook — called on play-start **and** on seek, already paired
-  with `openRealTimeNoteOns.removeAll()` — so reset the ring there (`_readIdx = _writeIdx.load(acquire)`, a
-  consumer-side op, safe). This preserves the old discard intent **and fixes a latent pre-existing issue**:
-  today, ≤ one poll-interval of events left over before a stop/seek are returned by the next poll and
-  re-timestamped against the *new* anchor, misplacing notes near the seek point. The reset discards them
-  cleanly. (Optional, out of scope: a final `drainRealTimeRing()` on stop would also capture the last
-  ≤ 66 ms of events, which are currently dropped — the ring makes this a trivial add if wanted later.)
-
-`WaveformView` is unaffected — it renders the SwiftUI `midiNoteOverlay` array and never touches the capture.
-
-#### Reuse the ring *design* in `MessageEventCapture` (Step 14.5) — a separate instance
-
-Step 14.5's spectral capture reuses this **ring design**, but as its **own dedicated ring instance** — not
-the MIDI ring. `MidiEventCapture` owns `MidiEvent _ring[kEventRingCapacity]`; `MessageEventCapture` owns a
-separate `SpectralMsg _ring[kEventRingCapacity]` holding its own POD slots. They share only the SPSC pattern,
-the drop-newest policy, and the `kEventRingCapacity` constant. The spectral capture has **no** lossless
-offline consumer — offline delivery is gated off entirely via `_deliveryEnabled` — so it uses only the ring
-half: written drop-newest by `handleMessageEvent` (real-time) and drained by `collectAndClearSpectralEvents`
-(main thread). No mode flag, no fallback vector, no `-beginRealTimeCapture` reset needed (the store clears its
-sample arrays on import instead). `SpectralMsg` is 16 bytes, so its ring is ~32 KB. Step 14.5's "mutex-guarded
-`std::vector`" wording is superseded by this ring pattern.
-
-#### Verification
-
-1. Play a dense percussion file → the real-time overlay still populates and loops correctly (no regression
-   from Step 14).
-2. Reason through / instrument the render block → no `malloc` and no lock on the audio path during playback.
-3. Export MIDI on a long, dense file → exported event count matches offline analysis exactly (lossless; the
-   ring is not involved in offline mode).
-4. Play, stop mid-file, seek elsewhere, resume → no stray/misplaced notes appear near the old stop/seek point
-   (ring-reset in `-beginRealTimeCapture`).
-5. Induce a main-thread stall during playback (e.g. a long synchronous op) → the overlay drops the newest
-   events gracefully; **audio stays clean** (no dropout from the render block).
-
----
-
-### Step 14.3 - Seek-During-Playback MIDI-block Misplacement Bug Fix (IMPLEMENTED)
-
-Fixes a bug — latent since Step 14 — where seeking the transport mid-playback could draw a MIDI note-block at
-the **new** playhead position when it belonged at/just before the **previous** position.
-
-#### Root cause — the anchor was applied at poll time
-
-Step 14 reconstructed real-time timestamps in `-collectAndClearRealTimeMidiEvents` using a single
-cross-thread **anchor pair** (`_rtAnchorPlayheadFrame`, `_rtAnchorRnboTimeBits`) applied *at poll time*:
-`fileMs = anchorFileMs + (event.getTime() − anchorRnboMs)`. A seek installed a *new* anchor
-(`anchorFileMs = P_new`) via `-beginRealTimeCapture`, so any event produced **before** the seek but converted
-**after** it was re-timed to `≈ P_new` and drawn at the wrong place. Step 14.25's `resetRealTimeRing()`
-shrank the window (from a full ~66 ms poll interval to a single render block) but a narrow race remained: an
-in-flight block draining just after the reset, and the render block reading `pos` *before* the anchor check
-(so the anchor-capture block could pair a `P_new` file frame with `P_old` audio).
-
-#### Fix — convert timestamps per-block, on the audio thread
-
-Each event is now stamped with its file-relative time **on the audio thread, in the block that produced it**,
-from that block's own playhead + RNBO-time base. Events are "born" correctly-timed and are inherently
-seek-immune — a `P_old` block's events land at `P_old`, a `P_new` block's at `P_new`, regardless of when a
-seek lands relative to the render callback. There is no mutable cross-thread anchor left to corrupt.
-
-Implemented in `AudioEngine.mm` / `.h` (offline path and public API surface unchanged):
-
-- New RT ring element `struct RtMidiEvent { double fileMs; uint8_t bytes[3]; uint8_t len; }`. The real-time
-  ring stores already-converted timestamps; the offline vector still holds raw `RNBO::MidiEvent`.
-- `MidiEventCapture::setBlockBase(fileMs, rnboMs, totalMs)` — producer-thread-only (no atomics), set by the
-  render block once per block before `drain()`.
-- `handleMidiEvent` (real-time) computes `fileMs = blockBaseFileMs + (event.getTime() − blockBaseRnboMs)`,
-  wraps with `std::fmod(fileMs, blockTotalMs)` for the transport loop, and stores `{fileMs, bytes, len}` in
-  the ring. `drainRealTimeRing()` now returns `std::vector<RtMidiEvent>`.
-- Render block: normalises `pos` once, then sets the block base from that `pos` and `core->getCurrentTime()`
-  (captured *before* `process()`) every block. The old deferred-anchor capture branch is deleted.
-- Retired the deferred anchor entirely: removed `_needsRtAnchor` / `_rtAnchorPlayheadFrame` /
-  `_rtAnchorRnboTimeBits` (ivars + captured render-block locals), the capture branch, and all anchor math from
-  `-collectAndClearRealTimeMidiEvents` (which now reads `fileMs` straight through). `-beginRealTimeCapture` is
-  reduced to `resetRealTimeRing()` (kept as a UX choice — surviving events are already correctly timed).
-- `fmod` moved to the audio thread (a few scalar ops + one `getCurrentTime()` per block; no alloc, no lock —
-  RT-safe); `#include <cmath>` added.
-
-#### Verification
-1. Hammer far seeks mid-playback (the original repro) → no block lands at the new playhead that belongs near
-   the old one.
-2. Loop the transport across the seek point → post-wrap events stay in `[0, totalMs)` (the `fmod` wrap now
-   runs on the audio thread).
-3. Export MIDI on a long dense file → event count still matches `Analyze` (offline path untouched).
-
-#### Known residual (addressed by Step 14.35)
-Under **pathological** rapid seeking, a few spurious / slightly-early blocks can still appear in the **live
-overlay**. This is **not** a timestamp race — it is RNBO's ~40 ms onset-detection latency and the input step
-discontinuity crossing the seek boundary: an onset from pre-seek audio is emitted a few blocks *after* the
-seek and stamped at the new playhead (then drawn ~40 ms early by the overlay's `processingLatencyMs`
-left-shift), and abrupt seeks also provoke discontinuity false-triggers. No per-block timestamp math can
-resolve it — the event genuinely belongs to pre-seek audio. Offline analysis/export is unaffected.
-
----
-
-### Step 14.35 - Post-Seek MIDI Settling Window (IMPLEMENTED)
-
-Suppresses the residual live-overlay artifact described at the end of Step 14.3 (RNBO's detection latency and
-the seek discontinuity leaking spurious / pre-seek onsets into the block(s) just after a seek).
-
-#### Why Step 14.3 can't fix it
-RNBO emits each MIDI event ~40 ms *after* the true audio onset (detection latency; the overlay compensates by
-left-shifting blocks by `AudioEngine.processingLatencyMs`). An onset in pre-seek audio is therefore emitted a
-few blocks after a seek, and per-block timestamping (correctly) stamps it at the new playhead — there is no
-correct post-seek position for an event that belongs to pre-seek audio. Abrupt seeks also create input step
-discontinuities the onset detector can register as false onsets.
-
-#### Idea
-After each seek, suppress **real-time** MIDI capture for exactly the detection latency, measured in
-**RNBO-time** (not wall-clock, so it tracks processed audio and is independent of the 15 fps poll
-granularity). That window is precisely long enough to flush the latency pipeline, dropping both the in-flight
-pre-seek onsets **and** the discontinuity false-triggers in one stroke.
-
-**Window = latency exactly (optimal).** Suppress while `blockRnbo < seekRnbo + latency`. A pre-seek onset
-(true time `< seekRnbo`) is emitted `< seekRnbo + latency` → dropped; a real post-seek onset (true time
-`≥ seekRnbo`) is emitted `≥ seekRnbo + latency` → kept. So `window = latency` drops every in-flight pre-seek
-onset while keeping every real post-seek one — a larger window would start eating real onsets, a smaller one
-would leak pre-seek ones.
-
-#### Single source of truth for the latency
-`AudioEngine` owns the figure as file-scope `kRnboProcessingLatencyMs` (hardcoded 40 ms placeholder; a future
-update feeds it from the patch's `processingLatency` outport). It is used **directly** by the settling window
-on the audio thread **and** exposed to Swift via the `processingLatencyMs` property, which `ContentView`
-passes into `WaveformView.midiLatencyCompensationMs` (the overlay's left-shift). `WaveformView` no longer
-holds its own latency constant, so the overlay shift and the settle window can never drift. There is **no**
-separate `kSeekSettleMs` constant — the settle duration *is* `kRnboProcessingLatencyMs`.
-
-#### Design (RT-safe, seek-only)
-- `MidiEventCapture`:
-  - `armSeekSettle()` (main thread) → sets `std::atomic<bool> _armSeekSettle`.
-  - In `setBlockBase` (audio thread, every block): `if (_armSeekSettle.exchange(false)) _settleUntilRnboMs =
-    rnboMs + kRnboProcessingLatencyMs;`.
-  - In `handleMidiEvent` (real-time, right after the offline-mode check): `if (_blockBaseRnboMs <
-    _settleUntilRnboMs) return;`. `_settleUntilRnboMs` is audio-thread-local.
-- `-setPlayheadPosition` calls `_midiCapture.armSeekSettle()` — the **seek-only** hook (called only from the
-  waveform seek handler), so play-start is unaffected and never suppresses a genuine first onset.
-
-#### Trade-off
-Essentially none: `window = latency` keeps all real post-seek onsets. At most, because the RNBO-time check
-uses the block-start time, a real onset landing within ~one render block of the window's edge could be missed
-**in the live overlay only**; the offline `Analyze` / `Export MIDI` path is unaffected and still
-captures everything. Negligible at a manual seek point.
-
-#### Verification
-1. Reproduce the Step 14.3 symptom (time a seek right around an onset) → spurious / slightly-early blocks near
-   the new playhead no longer appear.
-2. Seek to a quiet region, then let onsets play a beat later → they still appear (no over-suppression).
-3. Play without seeking → overlay unchanged (settle only arms on `-setPlayheadPosition`).
-4. Export MIDI → event count still matches `Analyze` (offline path untouched).
+7. Change a spectral cutoff mid-playback → rectangles keep their colors, nothing behind the playhead disappears, "Analyze" re-enables; re-classified notes replace their predecessors one at a time as playback passes over them.
+8. Press **Analyze** → entire overlay replaced by fresh offline results; all notes return to full color; button disables.
+9. Toggle `Onset/enable` or `Onset/needs_init` → overlay and button state unchanged.
+10. Press **Export MIDI** → exported file and overlay both reflect the same event set; button disables.
+11. Seek by clicking/dragging the waveform → existing rectangles stay at their file-relative positions, and no rectangle from before the seek lands at the new playhead.
+12. Import a second file → overlay clears; "Analyze" immediately enables.
 
 ---
 
@@ -1250,14 +740,14 @@ thread. A third `EventHandler` interface is still added (one subclass per event 
   value; }` — `feature` a plain `int`/enum discriminator (0 = centroid, 1 = flatness), **never an
   `NSString`** — and written into `MessageEventCapture`'s **own dedicated** lock-free SPSC ring buffer,
   `SpectralMsg _ring[kEventRingCapacity]`. This is a **separate ring instance** from the
-  `RtMidiEvent _ring[kEventRingCapacity]` in `MidiEventCapture` (Steps 14.25 / 14.3) — same design,
+  `RtMidiEvent _ring[kEventRingCapacity]` in `MidiEventCapture` — same design,
   drop-newest policy, and `kEventRingCapacity` constant, but a distinct buffer holding `SpectralMsg` slots.
   Drop-newest
   when full; strict single-producer/single-consumer, no `malloc`, no lock. **No `dispatch_async`, no ObjC
   object, no callback block touches the audio thread.** `eventsAvailable()` is a no-op; `drain()` is a thin
   `drainEvents()` wrapper, as with the sibling captures.
-- Because the spectral capture has no lossless offline consumer, it needs only the ring half of the Step
-  14.25 pattern — **skip `MidiEventCapture`'s MIDI-specific machinery**: no offline-mode fallback vector, no
+- Because the spectral capture has no lossless offline consumer, it needs only the ring half of
+  `MidiEventCapture`'s design — **skip its MIDI-specific machinery**: no offline-mode fallback vector, no
   `-beginRealTimeCapture` reset, **no per-block timestamp conversion** (`setBlockBase` / the `_blockBase*`
   members / the `fileMs` field), and **no seek settling window** (`armSeekSettle` / `_settleUntilRnboMs`).
   `SpectralMsg` carries only `{feature, value}` — spectral bars are plotted on the *value* axis, not a time

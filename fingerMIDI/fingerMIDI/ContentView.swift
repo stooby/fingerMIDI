@@ -438,6 +438,13 @@ struct ContentView: View {
     // seek, or file import). When this reaches totalDurationMs, the full file has been
     // processed in real-time with the current params and "Analyze" can be disabled.
     @State private var realTimeCoverageMs: Double = 0
+    // Identifies the overlay pass currently being captured. Bumped when an offline pass
+    // finishes or an analysis-affecting parameter changes, so real-time capture can sweep
+    // notes from superseded passes. Play/stop does not bump it.
+    @State private var overlayGeneration = 0
+    // Trailing edge (file ms) of the region sweepSupersededNotes has already consumed.
+    // nil after a seek or file load: the next poll re-anchors without sweeping.
+    @State private var lastSweptFrontierMs: Double? = nil
 
     private var engine: AudioEngine { store.engine }
     private var fileLoaded: Bool { audioLoaded }
@@ -449,31 +456,57 @@ struct ContentView: View {
         "Onset/thresh", "Onset/relaxtime", "Onset/floor", "Onset/mingap", "Onset/medspan"
     ]
 
-    // Half-width of the time window (in ms) used to match a fresh real-time note
-    // against an existing overlay note of the same pitch during loop overlap-replacement.
-    // Kept tight because RNBO DSP is deterministic — the same onset recurs at nearly
-    // the same timestamp on every loop; the window only needs to absorb float rounding.
+    // The spectral cutoffs decide which pitch an onset is classified as (36 kick vs
+    // 38 snare), never its timing or sensitivity. Kept out of onsetTuningParamIds so a
+    // cutoff change re-arms "Analyze" without greying the overlay.
+    private static let classificationParamIds: Set<String> = [
+        "SpecFlatCutoff", "SpecCentCutoff"
+    ]
+
+    // Every parameter that can change the analysis result, and so can make a fresh
+    // "Analyze" pass worthwhile.
+    private static let analysisParamIds: Set<String> =
+        onsetTuningParamIds.union(classificationParamIds)
+
+    // Half-width of the window (ms) used to match a fresh real-time note against an
+    // existing overlay note at the same point in time, replacing it. Kept tight because
+    // RNBO is deterministic within a pass — the same onset recurs at nearly the same
+    // timestamp on every loop, so the window only absorbs float rounding.
     private static let realtimeNoteReplaceWindowMs: Double = 5.0
+
+    // How far behind the playhead (ms) a superseded note must fall before the sweep
+    // removes it. Must exceed the patch's ~40 ms detection latency plus the 1/15 s poll
+    // interval, so a note the current pass is still about to report is never swept early.
+    private static let staleGenerationSweepGuardMs: Double = 200.0
 
     private var totalDurationMs: Double {
         guard engine.sampleRate > 0 else { return 0 }
         return Double(engine.totalFrameCount) / engine.sampleRate * 1000.0
     }
 
-    // True when onset tuning parameters differ from the last analysis snapshot, or no analysis
-    // has been run yet for the current file. Drives the "Analyze" button enabled state.
+    // True when any analysis-affecting parameter differs from the last analysis snapshot,
+    // or no analysis has been run yet for the current file. Drives "Analyze" enablement.
     private var onsetParamsDirty: Bool {
         guard let last = lastAnalyzedOnsetParams else { return true }
-        return paramsChanged(from: last)
+        return paramsChanged(from: last, ids: Self.analysisParamIds)
     }
 
     // True when onset tuning parameters differ from the params in effect when the overlay
     // was last populated (by either offline analysis or real-time capture). Drives stale
     // marking. Separate from onsetParamsDirty so that real-time-only overlay notes also
-    // trigger the false→true transition that .onChange(of:) requires.
+    // trigger the false→true transition that .onChange(of:) requires. Scoped to onset
+    // tuning only — a cutoff change re-classifies notes but doesn't invalidate them.
     private var overlayParamsDirty: Bool {
         guard let last = lastOverlayOnsetParams else { return false }
-        return paramsChanged(from: last)
+        return paramsChanged(from: last, ids: Self.onsetTuningParamIds)
+    }
+
+    // Same overlay snapshot as overlayParamsDirty, over the wider analysis set. Drives the
+    // coverage reset: without it fullRealTimeCoverageAchieved would keep "Analyze" disabled
+    // after a cutoff change.
+    private var coverageParamsDirty: Bool {
+        guard let last = lastOverlayOnsetParams else { return false }
+        return paramsChanged(from: last, ids: Self.analysisParamIds)
     }
 
     // True when the full file has been processed in real-time with the current onset params,
@@ -482,19 +515,20 @@ struct ContentView: View {
         totalDurationMs > 0 && realTimeCoverageMs >= totalDurationMs && !midiNoteOverlay.isEmpty
     }
 
-    private func paramsChanged(from snapshot: [String: Float]) -> Bool {
-        for (i, param) in store.params.enumerated()
-            where Self.onsetTuningParamIds.contains(param.rnboId)
-        {
+    // Compares current store values against `snapshot`, considering only `ids`.
+    private func paramsChanged(from snapshot: [String: Float], ids: Set<String>) -> Bool {
+        for (i, param) in store.params.enumerated() where ids.contains(param.rnboId) {
             if abs((snapshot[param.rnboId] ?? Float.nan) - store.values[i]) > 0.0001 { return true }
         }
         return false
     }
 
+    // Snapshots the full analysis set; each comparison above reads back only the ids it
+    // gates on.
     private func currentOnsetParamSnapshot() -> [String: Float] {
         var snapshot: [String: Float] = [:]
         for (i, param) in store.params.enumerated()
-            where Self.onsetTuningParamIds.contains(param.rnboId)
+            where Self.analysisParamIds.contains(param.rnboId)
         {
             snapshot[param.rnboId] = store.values[i]
         }
@@ -541,6 +575,9 @@ struct ContentView: View {
                         engine.beginRealTimeCapture()
                         openRealTimeNoteOns.removeAll()
                         if !fullRealTimeCoverageAchieved { realTimeCoverageMs = 0 }
+                        // The playhead jumped, so the sweep's band is no longer contiguous;
+                        // re-anchor at the new position.
+                        lastSweptFrontierMs = nil
                     },
                     midiNotes: midiNoteOverlay,
                     totalDurationMs: totalDurationMs,
@@ -585,10 +622,20 @@ struct ContentView: View {
             if isDirty && !midiNoteOverlay.isEmpty {
                 midiNoteOverlay = midiNoteOverlay.map {
                     MIDINoteEvent(note: $0.note, velocity: $0.velocity,
-                                  onsetMs: $0.onsetMs, durationMs: $0.durationMs, isStale: true)
+                                  onsetMs: $0.onsetMs, durationMs: $0.durationMs,
+                                  isStale: true, generation: $0.generation)
                 }
             }
-            if isDirty { realTimeCoverageMs = 0 }
+        }
+        // Coverage is invalidated by the wider analysis set, so a cutoff change re-enables
+        // "Analyze" without greying the overlay.
+        .onChange(of: coverageParamsDirty) { _, isDirty in
+            if isDirty {
+                realTimeCoverageMs = 0
+                // Notes captured from here on belong to a new pass; what's on screen
+                // becomes sweepable.
+                overlayGeneration += 1
+            }
         }
         .fileImporter(
             isPresented: $showFilePicker,
@@ -854,20 +901,76 @@ struct ContentView: View {
         lastOverlayOnsetParams = nil
         openRealTimeNoteOns.removeAll()
         realTimeCoverageMs = 0
+        overlayGeneration = 0
+        lastSweptFrontierMs = nil
         // Clear the spectral histograms and reset their display axes for the new file.
         store.clearSpectral()
     }
 
     // MARK: Real-Time MIDI Overlay
 
-    // Inserts a fresh real-time note into midiNoteOverlay, removing any existing note of
-    // the same pitch within the replacement window (handles re-detection on loop iterations).
+    // Inserts a fresh real-time note into midiNoteOverlay, removing any existing note within
+    // the replacement window (handles re-detection on loop iterations / replays).
+    //
+    // Matching is by onset time only, not by pitch: RNBO emits one note per detected onset,
+    // so at most one rectangle may occupy a given onset. Matching on pitch too would leave
+    // the old note behind whenever a replay re-classified an onset to the other pitch.
     private func mergeRealTimeNote(_ note: MIDINoteEvent) {
+        var tagged = note
+        tagged.generation = overlayGeneration
         let window = Self.realtimeNoteReplaceWindowMs
-        midiNoteOverlay.removeAll { existing in
-            existing.note == note.note && abs(existing.onsetMs - note.onsetMs) <= window
+        midiNoteOverlay.removeAll { abs($0.onsetMs - tagged.onsetMs) <= window }
+        midiNoteOverlay.append(tagged)
+    }
+
+    // Removes notes left over from a superseded pass across the band of file time the
+    // playhead travelled since the previous poll, so a replay replaces an earlier pass's
+    // rectangles progressively as it reaches them. Notes elsewhere are untouched: a
+    // superseded note that has not been played over again stays on screen.
+    //
+    // Provenance decides this rather than timestamp proximity because the same onset is
+    // stamped ~8 ms later by real-time capture than by an offline render, with a phase that
+    // shifts on every seek and loop wrap — far outside realtimeNoteReplaceWindowMs.
+    //
+    // Bands are contiguous poll to poll, so every position is swept exactly once; a negative
+    // delta means the playhead wrapped at the loop point.
+    private func sweepSupersededNotes() {
+        let total = totalDurationMs
+        guard total > 0 else { return }
+
+        var frontier = (engine.playheadFraction * total - Self.staleGenerationSweepGuardMs)
+            .truncatingRemainder(dividingBy: total)
+        if frontier < 0 { frontier += total }
+
+        let previous = lastSweptFrontierMs
+        lastSweptFrontierMs = frontier
+        guard let from = previous else { return }   // first poll of a fresh timeline
+
+        var bandLength = frontier - from
+        if bandLength < 0 { bandLength += total }   // wrapped past the loop point
+        guard bandLength > 0 else { return }
+
+        midiNoteOverlay.removeAll { note in
+            guard note.generation < overlayGeneration else { return false }
+            var offset = note.onsetMs - from
+            if offset < 0 { offset += total }
+            return offset < bandLength
         }
-        midiNoteOverlay.append(note)
+    }
+
+    // Replaces the overlay with the results of an offline pass, stamping them with the
+    // current generation and then closing that generation out. The bump makes any later
+    // real-time capture strictly newer, so it sweeps these notes as it passes them — needed
+    // even when no parameter changed, since the two timebases disagree by ~8 ms and would
+    // otherwise stack two rectangles per onset.
+    private func adoptOfflineNotes(_ notes: [MIDINoteEvent]) {
+        let generation = overlayGeneration
+        midiNoteOverlay = notes.map {
+            MIDINoteEvent(note: $0.note, velocity: $0.velocity,
+                          onsetMs: $0.onsetMs, durationMs: $0.durationMs,
+                          isStale: $0.isStale, generation: generation)
+        }
+        overlayGeneration += 1
     }
 
     // Drains newly accumulated real-time MIDI events and merges completed notes into the overlay.
@@ -902,6 +1005,9 @@ struct ContentView: View {
         if addedAnyNote {
             lastOverlayOnsetParams = currentOnsetParamSnapshot()
         }
+        // Unconditional: superseded notes must also clear over stretches where the current
+        // pass detects nothing, not only where it re-detects.
+        sweepSupersededNotes()
     }
 
     // Closes all pending real-time note-ons with a fallback duration and merges them
@@ -947,7 +1053,7 @@ struct ContentView: View {
                 // RNBO parameters; re-push UI values immediately to restore DSP state.
                 engine.resumeAfterOfflineRender()
                 self.store.pushAllValuesToEngine()
-                self.midiNoteOverlay = notes
+                self.adoptOfflineNotes(notes)
                 self.lastAnalyzedOnsetParams = snapshot
                 self.lastOverlayOnsetParams = snapshot
                 self.isMIDIAnalyzing = false
@@ -1040,7 +1146,7 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 engine.resumeAfterOfflineRender()
                 self.store.pushAllValuesToEngine()
-                self.midiNoteOverlay = notes
+                self.adoptOfflineNotes(notes)
                 self.lastAnalyzedOnsetParams = snapshot
                 self.lastOverlayOnsetParams = snapshot
                 self.isExporting = false

@@ -13,6 +13,10 @@ struct MIDINoteEvent {
     let onsetMs: Double
     let durationMs: Double
     var isStale: Bool = false
+    // Which overlay pass produced this note, so a real-time pass can recognise and sweep
+    // notes left over from an earlier one (see ContentView.overlayGeneration). Bookkeeping
+    // only — never drawn.
+    var generation: Int = 0
 }
 
 // MARK: - WaveformThumbnail
