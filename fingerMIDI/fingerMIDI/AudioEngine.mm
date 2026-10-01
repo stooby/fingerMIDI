@@ -9,6 +9,7 @@
 #import <AVFoundation/AVFoundation.h>
 #include "rnbo/RNBO.h"
 #include "rnbo_snare-kick-detector.cpp"   // generated RNBO patch file
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -406,6 +407,46 @@ static const AVAudioFrameCount kMaxFrames = 4096;
 // Block size used for offline rendering. Smaller than the real-time buffer to
 // maximise timestamp resolution for onset detection (≈1.45 ms at 44.1 kHz).
 static const AVAudioFrameCount kOfflineBlockSize = 64;
+
+// "Include Audio Tail" offline export (Step 11.5). After the source PCM ends, RNBO
+// is fed silence until the output stays below the threshold for the hold window;
+// the file then ends with a short fade over that sub-threshold audio so the final
+// sample is exactly 0.0. The hold window must exceed the longest gap between
+// discrete echoes — Greyhole clamps its delay line to 65533 samples (≈1.49 s at
+// 44.1 kHz) regardless of its DelayTime parameter. Non-decaying tails (Feedback
+// ≈ 1.0) stop at the cap with an audible fade-out instead.
+static const double kTailSilenceThresholdDb = -96.0;
+static const double kTailSilenceHoldSec     = 3.0;
+static const double kTailEndFadeMs          = 10.0;
+static const double kTailMaxSec             = 60.0;
+static const double kTailCapFadeSec         = 5.0;
+
+// Fades the end of a rendered effects tail in place so it finishes on an exact 0.0
+// sample, and returns the number of tail frames to keep. `lastLoud` is the index of
+// the last frame at or above the silence threshold (-1 if none). On a natural end
+// the fade covers only the sub-threshold frames after `lastLoud`, so it is
+// inaudible; when `capHit` the tail never decayed, so the last `capFadeFrames`
+// get an audible fade-out instead.
+static size_t applyTailEndFade(std::vector<float> &tailL, std::vector<float> &tailR,
+                               int64_t lastLoud, bool capHit,
+                               size_t fadeFrames, size_t capFadeFrames) {
+    size_t endFrame, fadeStart;
+    if (capHit) {
+        endFrame  = tailL.size();
+        fadeStart = endFrame > capFadeFrames ? endFrame - capFadeFrames : 0;
+    } else {
+        fadeStart = (size_t)(lastLoud + 1);
+        endFrame  = std::min(tailL.size(), fadeStart + fadeFrames);
+    }
+    size_t fadeLen = endFrame - fadeStart;
+    for (size_t i = 0; i < fadeLen; ++i) {
+        // Linear 1 → 0 ramp; the last kept frame lands exactly on gain 0.
+        float gain = fadeLen > 1 ? 1.0f - (float)i / (float)(fadeLen - 1) : 0.0f;
+        tailL[fadeStart + i] *= gain;
+        tailR[fadeStart + i] *= gain;
+    }
+    return endFrame;
+}
 
 // ---------------------------------------------------------------------------
 // Live recording waveform accumulator (Step 9)
@@ -1273,18 +1314,22 @@ struct LiveWaveform {
 }
 
 // ---------------------------------------------------------------------------
-// Private offline processing loop shared by -renderOfflineAudioToURL:error:
-// and -renderOfflineMIDI. Resets RNBO DSP state, then drives process() over
-// the entire loaded PCM array in kOfflineBlockSize-frame blocks.
+// Private offline processing loop shared by
+// -renderOfflineAudioToURL:includeTail:error: and -renderOfflineMIDI. Resets
+// RNBO DSP state, then drives process() over the entire loaded PCM array in
+// kOfflineBlockSize-frame blocks.
 //
 // `audioFile` may be nil (MIDI-only pass); when non-nil, each block's output
 // is written to the file. `pcmBuf` must be pre-allocated with capacity
 // kOfflineBlockSize when `audioFile` is non-nil; ignored when nil.
+// `includeTail` (audio pass only) continues rendering past the source end via
+// -_renderTailWritingTo:... until the effects tail has decayed.
 //
 // Returns NO and populates *outError if an AVAudioFile write fails.
 // ---------------------------------------------------------------------------
 - (BOOL)_runOfflineLoopWritingTo:(AVAudioFile *)audioFile
                           pcmBuf:(AVAudioPCMBuffer *)pcmBuf
+                     includeTail:(BOOL)includeTail
                            error:(NSError **)outError {
     float   *pcmL      = _pcmL.load(std::memory_order_acquire);
     float   *pcmR      = _pcmR.load(std::memory_order_acquire);
@@ -1319,9 +1364,11 @@ struct LiveWaveform {
     _offlineRenderStartMs = _coreObject.getCurrentTime();
 
     int64_t pos = 0;
+    AVAudioFrameCount lastFrames = kOfflineBlockSize; // valid frames in the final block
     while (pos < total) {
         AVAudioFrameCount frames =
             (AVAudioFrameCount)std::min((int64_t)kOfflineBlockSize, total - pos);
+        lastFrames = frames;
 
         // Copy valid input samples; remainder of the block stays zero-padded.
         for (AVAudioFrameCount i = 0; i < frames; ++i) {
@@ -1351,10 +1398,108 @@ struct LiveWaveform {
 
         pos += frames;
     }
+
+    if (audioFile && includeTail) {
+        // outBufs still hold the final block's output; frames past `lastFrames`
+        // were rendered but not written, so they become the start of the tail.
+        return [self _renderTailWritingTo:audioFile
+                                   pcmBuf:pcmBuf
+                                   inBufs:inBufs
+                                  outBufs:outBufs
+                                carryFrom:lastFrames
+                                    error:outError];
+    }
     return YES;
 }
 
-- (BOOL)renderOfflineAudioToURL:(NSURL *)url error:(NSError **)outError {
+// ---------------------------------------------------------------------------
+// "Include Audio Tail" phase (Step 11.5), run after the main offline loop.
+// Feeds RNBO silence and accumulates its output in memory until the output has
+// stayed below kTailSilenceThresholdDb for kTailSilenceHoldSec (natural end) or
+// the tail reaches kTailMaxSec (cap). The tail is then faded so the file ends on
+// an exact 0.0 sample, and written to `audioFile`.
+//
+// `inBufs` / `outBufs` are the main loop's scratch buffers; `outBufs` frames
+// [carryFrom, kOfflineBlockSize) are the unwritten remainder of the final
+// partial block and seed the tail so there is no discontinuity at the
+// source-length boundary.
+// ---------------------------------------------------------------------------
+- (BOOL)_renderTailWritingTo:(AVAudioFile *)audioFile
+                      pcmBuf:(AVAudioPCMBuffer *)pcmBuf
+                      inBufs:(RNBO::SampleValue **)inBufs
+                     outBufs:(RNBO::SampleValue **)outBufs
+                   carryFrom:(AVAudioFrameCount)carryFrom
+                       error:(NSError **)outError {
+    const double sr            = _engineSampleRate;
+    const float  threshold     = (float)std::pow(10.0, kTailSilenceThresholdDb / 20.0);
+    const size_t holdFrames    = (size_t)(kTailSilenceHoldSec * sr);
+    const size_t capFrames     = (size_t)(kTailMaxSec * sr);
+    const size_t fadeFrames    = (size_t)(kTailEndFadeMs * 0.001 * sr);
+    const size_t capFadeFrames = (size_t)(kTailCapFadeSec * sr);
+
+    std::vector<float> tailL, tailR;
+    tailL.reserve(holdFrames + kOfflineBlockSize);
+    tailR.reserve(holdFrames + kOfflineBlockSize);
+    int64_t lastLoud = -1; // index of the last tail frame at/above threshold
+
+    auto appendOutput = [&](AVAudioFrameCount from) {
+        for (AVAudioFrameCount i = from; i < kOfflineBlockSize; ++i) {
+            float l = (float)outBufs[0][i];
+            float r = (float)outBufs[1][i];
+            if (std::max(std::fabs(l), std::fabs(r)) >= threshold)
+                lastLoud = (int64_t)tailL.size();
+            tailL.push_back(l);
+            tailR.push_back(r);
+        }
+    };
+
+    appendOutput(carryFrom);
+
+    std::fill(inBufs[0], inBufs[0] + kOfflineBlockSize, 0.0);
+    std::fill(inBufs[1], inBufs[1] + kOfflineBlockSize, 0.0);
+
+    bool capHit = false;
+    while (true) {
+        if (tailL.size() - (size_t)(lastLoud + 1) >= holdFrames) break;
+        if (tailL.size() >= capFrames) { capHit = true; break; }
+
+        _coreObject.process(inBufs, 2, outBufs, 2, kOfflineBlockSize);
+        _midiCapture.drain();
+        _paramCapture.drain();
+        _messageCapture.drain(); // delivery disabled during offline — drops events, keeps queue empty
+        appendOutput(0);
+    }
+    if (capHit) {
+        tailL.resize(capFrames);
+        tailR.resize(capFrames);
+    }
+
+    size_t endFrame = applyTailEndFade(tailL, tailR, lastLoud, capHit,
+                                       fadeFrames, capFadeFrames);
+
+    float * const *ch = pcmBuf.floatChannelData;
+    for (size_t pos = 0; pos < endFrame; pos += kOfflineBlockSize) {
+        AVAudioFrameCount frames =
+            (AVAudioFrameCount)std::min((size_t)kOfflineBlockSize, endFrame - pos);
+        std::memcpy(ch[0], tailL.data() + pos, frames * sizeof(float));
+        std::memcpy(ch[1], tailR.data() + pos, frames * sizeof(float));
+        pcmBuf.frameLength = frames;
+        if (![audioFile writeFromBuffer:pcmBuf error:outError])
+            return NO;
+    }
+
+    if (capHit)
+        NSLog(@"[AudioEngine] audio tail: cap reached at %.1f s — non-decaying feedback? "
+              "Applied %.1f s fade-out", kTailMaxSec, kTailCapFadeSec);
+    else
+        NSLog(@"[AudioEngine] audio tail: %.2f s (decayed below %.0f dBFS)",
+              (double)endFrame / sr, kTailSilenceThresholdDb);
+    return YES;
+}
+
+- (BOOL)renderOfflineAudioToURL:(NSURL *)url
+                    includeTail:(BOOL)includeTail
+                          error:(NSError **)outError {
     float   *pcmL  = _pcmL.load(std::memory_order_acquire);
     int64_t  total = _pcmFrameCount.load(std::memory_order_acquire);
     if (!pcmL || total == 0) {
@@ -1373,11 +1518,15 @@ struct LiveWaveform {
     AVAudioPCMBuffer *pcmBuf = [[AVAudioPCMBuffer alloc]
         initWithPCMFormat:format frameCapacity:kOfflineBlockSize];
 
-    BOOL ok = [self _runOfflineLoopWritingTo:outFile pcmBuf:pcmBuf error:outError];
+    BOOL ok = [self _runOfflineLoopWritingTo:outFile
+                                      pcmBuf:pcmBuf
+                                 includeTail:includeTail
+                                       error:outError];
 
-    NSLog(@"[AudioEngine] offline audio render %@: %.1f s to %@",
+    NSLog(@"[AudioEngine] offline audio render %@: %.1f s source%@ to %@",
           ok ? @"complete" : @"failed",
           (double)total / _engineSampleRate,
+          includeTail ? @" + tail" : @"",
           url.lastPathComponent);
     return ok;
 }
@@ -1390,7 +1539,7 @@ struct LiveWaveform {
         return;
     }
 
-    [self _runOfflineLoopWritingTo:nil pcmBuf:nil error:nil];
+    [self _runOfflineLoopWritingTo:nil pcmBuf:nil includeTail:NO error:nil];
 
     NSLog(@"[AudioEngine] offline MIDI render complete: %.1f s processed",
           (double)total / _engineSampleRate);

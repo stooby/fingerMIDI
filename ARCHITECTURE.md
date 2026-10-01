@@ -450,6 +450,67 @@ In `AudioEngine.mm`, add two separate methods — `-renderOfflineAudioToURL:(NSU
 
 ---
 
+### Step 11.5 Implement 'Include Audio Tail' Enhancement for Offline Audio Export (IMPLEMENTED)
+
+Equivalent to Logic Pro's Bounce → **Include Audio Tail**. When enabled, the offline audio export keeps rendering past the end of the source PCM (feeding silence) until the processed output has decayed to silence, then ends the file at an exact `0.0` sample. When disabled, export behaves exactly as today (output length == source length).
+
+Applies to **offline audio export only**. `renderOfflineMIDI` and the MIDI export / Analyze paths are unchanged (no tail rendering), so the MIDI regression test is unaffected.
+
+#### Why "decays to exactly 0.0" can't be the detection criterion
+
+A feedback delay/reverb decays exponentially and, in double precision, takes minutes (or forever, with LFO-modulated delay lines and denormal handling) to reach a literal `0.0`. Example: Feedback 0.85 at a 0.1 s loop loses ≈1.4 dB per pass — reaching -96 dB takes ≈7 s, but reaching the smallest double takes thousands of passes. So the plan splits the requirement in two:
+
+1. **Detect** the end of the tail with a threshold: the point after which the output stays below **-96 dBFS** (the 16-bit noise floor; inaudible).
+2. **Guarantee** the file ends at pure silence with no click: append a short fade over the sub-threshold audio after that point so the final sample is exactly `0.0`. Because the faded audio is already below -96 dBFS, the fade itself is inaudible — it can't produce a pop.
+
+#### Tail constants (`AudioEngine.mm`, next to `kOfflineBlockSize`)
+
+| Constant | Value | Rationale |
+|---|---|---|
+| `kTailSilenceThresholdDb` | -96 dBFS (≈ 1.585e-5 linear) | 16-bit LSB; below audibility. |
+| `kTailSilenceHoldSec` | 3.0 s | How long the output must stay below threshold before the tail is declared finished. Must exceed the longest gap between discrete echoes, otherwise a sparse echo (Diffusion 0) could be cut off. Greyhole clamps its delay line to 65 533 samples (≈1.49 s @ 44.1 kHz, ≈1.37 s @ 48 kHz) regardless of the `DelayTime` parameter's 0.1–60 range, so 3 s gives roughly 2× headroom. |
+| `kTailEndFadeMs` | 10 ms | Fade applied after the last above-threshold sample (natural end). |
+| `kTailMaxSec` | 60 s | Hard cap for tails that never decay (Feedback ≈ 1.0, e.g. a randomized preset 9). |
+| `kTailCapFadeSec` | 5.0 s | Audible fade-out applied only when the cap is hit, so a non-decaying tail ends smoothly instead of truncating. |
+
+#### `AudioEngine.h` / `AudioEngine.mm`
+
+1. Replace the audio export entry point with a tail-aware variant (single call site in `ContentView`):
+   ```objc
+   - (BOOL)renderOfflineAudioToURL:(NSURL *)url
+                       includeTail:(BOOL)includeTail
+                             error:(NSError **)outError
+       NS_SWIFT_NAME(renderOfflineAudio(to:includeTail:));
+   ```
+2. Add an `includeTail:(BOOL)` argument to `_runOfflineLoopWritingTo:pcmBuf:includeTail:error:`. `renderOfflineMIDI` passes `NO`. The main loop body stays as-is.
+3. **Tail phase** (runs after the main loop, only when `audioFile && includeTail`):
+   - **Carry over the discarded remainder of the final block.** The main loop always calls `process()` with a full 64 frames but writes only `frames` (< 64 on the last, partial block). Output frames `[frames, 64)` were already computed and the DSP's state has moved past them. Those frames are the first samples of the tail, and dropping them would put a discontinuity right at the source-length boundary. Seed the tail buffer with them. (When the source length is an exact multiple of 64, there's nothing to carry over.)
+   - **Render silence into an in-memory tail buffer.** Two `std::vector<float>` (L/R), reserved incrementally. Loop: zero inputs → `process()` → `drain()` the three captures (same as the main loop) → append 64 output frames → for each frame, if `max(|L|, |R|) ≥ threshold` set `lastLoud = index`. Stop when `tailFrames - (lastLoud + 1) ≥ holdFrames` (natural end) or `tailFrames ≥ capFrames` (cap hit). Memory is bounded by the cap: 60 s × 48 kHz × 2 ch × 4 B ≈ 23 MB.
+   - **Compute the end point and fade.** This is a pure free function, `computeTailEnd(...)`, kept separate from the engine so it's easy to reason about:
+     - *Natural end:* `endFrame = lastLoud + 1 + fadeFrames` (with `lastLoud = -1` if the whole tail was already silent, so the tail is just the fade). Apply a linear gain ramp 1 → 0 over `[lastLoud + 1, endFrame)`, and force the final sample to exactly `0.0f`.
+     - *Cap hit:* `endFrame = capFrames`. Apply a ramp over the last `kTailCapFadeSec` and force the final sample to `0.0f`. Log a warning (`tail cap reached — non-decaying feedback?`).
+   - **Write the trimmed tail** to the `AVAudioFile` in `kOfflineBlockSize` chunks through the existing reused `pcmBuf`.
+4. Logging: the tail phase logs the tail length, or a cap-reached warning. The existing `offline audio render complete` `NSLog` notes `+ tail` when the option was on.
+
+#### `ContentView.swift`
+
+1. Add `@AppStorage("includeAudioTail") private var includeAudioTail = false`. It defaults to off, and the last-used setting is remembered across dialog openings and app launches.
+2. In `exportAudioOffline()`, attach an `NSSavePanel.accessoryView` holding a single checkbox (`NSButton(checkboxWithTitle: "Include Audio Tail", ...)`, initial state from `includeAudioTail`). When `runModal()` returns (Save or Cancel), write the checkbox state back to `includeAudioTail`. On Save, capture it as a local `let` before the background dispatch.
+3. Call `engine.renderOfflineAudio(to: url, includeTail: includeTail)`. Threading, `stopForOfflineRender` / `pushAllValuesToEngine` ordering, and the `isExporting` spinner are unchanged. Tail rendering only lengthens the background work.
+
+#### Verification
+
+1. **Toggle off:** export with Greyhole preset 1. The output length equals the source length (sample-identical to the pre-change export).
+2. **Toggle on, short tail (preset 1):** the output is longer than the source, the tail decays smoothly, and in an editor (e.g. Audacity / RX) the last sample is `0.0` with no click at the end or at the source-length boundary.
+3. **Toggle on, sparse echoes:** Diffusion 0, long `DelayTime`, moderate Feedback. No echo is cut off before the end.
+4. **Toggle on, Feedback 1.0:** the export stops at source + 60 s with a 5 s fade-out, and the cap warning is logged.
+5. **Toggle on, dry signal** (Greyhole send/output at -77 dB): the output is the source length + 10 ms. This is intentional: detecting a "dry" patch state up front would mean tracking specific send/output parameters, so the 10 ms fade is accepted instead.
+6. **Toggle state** defaults to off on first use and persists across dialog openings and app relaunches.
+
+Automated tests are deferred; verification is manual for now.
+
+---
+
 ### Step 12 — Implement Real-time Audio and MIDI Export (Workflow 1b)
 
 In `AudioEngine.mm`:
@@ -1622,6 +1683,50 @@ To support this lookup, `Param` stores `rnboId: String` (the full RNBO parameter
 #### Required entitlement
 
 `NSSavePanel` requires the **User Selected File Read/Write** entitlement (`com.apple.security.files.user-selected.read-write`) in the App Sandbox. Set via Xcode → target → Signing & Capabilities → App Sandbox → File Access → User Selected File → **Read/Write**.
+
+#### Include Audio Tail (Step 11.5)
+
+This is the equivalent of Logic Pro's Bounce → **Include Audio Tail**. With the option on, offline audio export keeps rendering after the source PCM ends, feeding silence, until the effects tail (Greyhole delay/reverb, drum synth decay) has died away. The file then ends on an exact `0.0` sample. With it off, the output length equals the source length, same as before. MIDI export and Analyze never render a tail.
+
+**UI and persistence (`ContentView.swift`).** `exportAudioOffline()` adds an `NSSavePanel.accessoryView` holding one `NSButton` checkbox, "Include Audio Tail". It's backed by `@AppStorage("includeAudioTail")`, which defaults to `false`. The checkbox state is written back when the panel closes, whether by Save or Cancel, so the last setting carries over between dialog openings and app launches. On Save, the value is copied into a local `let` before the background dispatch and passed as `engine.renderOfflineAudio(to: url, includeTail:)`. Threading and the ordering of `stopForOfflineRender` and `pushAllValuesToEngine` are the same as for a plain export.
+
+**Engine call chain (`AudioEngine.mm`).**
+
+```
+-renderOfflineAudioToURL:includeTail:error:
+    └─ -_runOfflineLoopWritingTo:pcmBuf:includeTail:error:     (main loop over source PCM, unchanged)
+           └─ if (audioFile && includeTail)
+                  -_renderTailWritingTo:pcmBuf:inBufs:outBufs:carryFrom:error:
+                       └─ applyTailEndFade()                   (static free function)
+```
+
+`renderOfflineMIDI` passes `includeTail:NO`.
+
+**Tail constants** (next to `kOfflineBlockSize`):
+
+| Constant | Value | Role |
+|---|---|---|
+| `kTailSilenceThresholdDb` | -96 dBFS | Level the output counts as silent below (the 16-bit noise floor). |
+| `kTailSilenceHoldSec` | 3.0 s | How long the output must stay below the threshold before the tail is finished. |
+| `kTailEndFadeMs` | 10 ms | Fade after the last above-threshold frame on a natural end. |
+| `kTailMaxSec` | 60 s | Hard cap for tails that never decay. |
+| `kTailCapFadeSec` | 5.0 s | Audible fade-out applied only when the cap is hit. |
+
+**Tail phase algorithm** (`_renderTailWritingTo:`):
+
+1. **Carry over the last partial block.** The main loop always calls `process()` with 64 frames but writes only `lastFrames` on the final, partial block. Output frames `[lastFrames, 64)` are still in `outBufs`, and RNBO's state has already moved past them. They are added to the tail first, so the source-to-tail transition has no discontinuity. When the source length is an exact multiple of 64, `lastFrames == 64` and nothing is carried.
+2. **Render silence into memory.** The inputs are zeroed, then the loop repeats: `process()` → `drain()` the three captures (same as the main loop) → append the 64 output frames to `std::vector<float>` `tailL`/`tailR`. For each frame, if `max(|L|, |R|) ≥ threshold`, `lastLoud` is set to that frame's index (it starts at -1).
+3. **Stop condition.** Rendering stops on a natural end, `tailSize − (lastLoud + 1) ≥ holdFrames`, checked first. Otherwise it stops at the cap, `tailSize ≥ capFrames`; the tail is then resized to exactly `capFrames` to drop the overshoot from the last block. Memory is bounded by the cap: 60 s × 48 kHz × 2 ch × 4 B ≈ 23 MB.
+4. **`applyTailEndFade()`** applies a linear 1 → 0 gain ramp in place and returns the number of frames to keep. On a natural end the ramp covers `[lastLoud + 1, lastLoud + 1 + fadeFrames)`. On a cap end it covers the last `capFadeFrames`. The last kept frame always gets gain 0, so the file ends on exactly `0.0`.
+5. **Write.** The trimmed tail is written to the `AVAudioFile` in `kOfflineBlockSize` chunks through the reused `pcmBuf`, then logged: `audio tail: N s (decayed below -96 dBFS)`, or a cap-reached warning.
+
+**Design notes:**
+
+- **Why a threshold instead of a literal 0.0.** A feedback delay decays exponentially. Reaching a literal `0.0` in double precision would take thousands of passes through the feedback loop, which means minutes, or never with LFO-modulated delay lines. Instead, the threshold decides where the tail ends, and the fade guarantees the exact zero. On a natural end, the fade only touches audio already below -96 dBFS, so it can't make an audible click.
+- **Why a 3 s hold window.** The window has to be longer than the longest gap between discrete echoes. Otherwise a sparse echo pattern (Diffusion 0) would be cut off between repeats. The `GreyholeDelayFX_Stereo/DelayTime` parameter's range is 0.1–60, but the generated code clamps the delay line to `min(65533, SR × DelayTime)` samples. That's about 1.49 s at 44.1 kHz and 1.37 s at 48 kHz, so 3 s gives about 2× headroom. If the patch ever gets a longer delay line, raise `kTailSilenceHoldSec` to match.
+- **Why there's a cap.** `Feedback` can reach 1.0, and preset 9 picks a random value, so some tails never decay. At the cap, the 5 s fade-out ends the tail deliberately instead of cutting it off.
+- **Dry exports gain 10 ms.** With the option on and no effects tail, the output is the source length + 10 ms (the end fade), and the whole tail stays below the threshold. This is intentional. Detecting a "dry" patch up front would mean watching specific send/output parameters (`DrumSynthDelaySend_dB`, `InputDelaySend_dB`, `DelayOutput_dB`), so the extra 10 ms is accepted instead.
+- **Export time.** The tail renders on the same background thread under the existing "Exporting…" spinner. The worst case adds 60 s of audio to render, which is still far faster than real time.
 
 ---
 

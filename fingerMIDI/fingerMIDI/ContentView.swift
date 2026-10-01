@@ -420,6 +420,9 @@ struct ContentView: View {
     @State private var isRecording = false
     @State private var showMicDeniedAlert = false
     @State private var isExporting = false
+    // "Include Audio Tail" checkbox in the Export Processed Audio dialog — off by
+    // default, last setting persisted across dialog openings and app launches.
+    @AppStorage("includeAudioTail") private var includeAudioTail = false
     @State private var isMIDIAnalyzing = false
     @State private var showFilePicker = false
     @State private var loadedFileName: String?   // header display only; nil for recordings
@@ -1080,7 +1083,23 @@ struct ContentView: View {
         panel.allowedContentTypes = [UTType(filenameExtension: "wav")!]
         panel.nameFieldStringValue = "Export.wav"
         panel.title = "Export Processed Audio"
-        guard panel.runModal() == .OK, let url = panel.url else {
+
+        // "Include Audio Tail" checkbox (Logic Pro Bounce equivalent): keep rendering
+        // past the source end until delay/reverb tails decay to silence.
+        let tailCheckbox = NSButton(checkboxWithTitle: "Include Audio Tail", target: nil, action: nil)
+        tailCheckbox.state = includeAudioTail ? .on : .off
+        tailCheckbox.sizeToFit()
+        let accessory = NSView(frame: NSRect(x: 0, y: 0,
+                                             width: tailCheckbox.frame.width + 40,
+                                             height: tailCheckbox.frame.height + 20))
+        tailCheckbox.setFrameOrigin(NSPoint(x: 20, y: 10))
+        accessory.addSubview(tailCheckbox)
+        panel.accessoryView = accessory
+
+        let response = panel.runModal()
+        includeAudioTail = tailCheckbox.state == .on
+        let includeTail = includeAudioTail
+        guard response == .OK, let url = panel.url else {
             engine.resumeAfterOfflineRender()
             store.pushAllValuesToEngine()
             if wasPlaying { engine.start(); isPlaying = true }
@@ -1090,7 +1109,7 @@ struct ContentView: View {
         isExporting = true
         DispatchQueue.global(qos: .userInitiated).async { [engine] in
             do {
-                try engine.renderOfflineAudio(to: url)
+                try engine.renderOfflineAudio(to: url, includeTail: includeTail)
             } catch {
                 NSLog("[ContentView] audio export error: %@", error.localizedDescription)
             }

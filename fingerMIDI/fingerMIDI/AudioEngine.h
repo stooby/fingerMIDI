@@ -22,7 +22,7 @@
 - (void)stop;
 
 /// Stops the AVAudioEngine hardware IO in preparation for an offline render.
-/// Call on the main thread before renderOfflineAudio(to:) or renderOfflineMIDI().
+/// Call on the main thread before renderOfflineAudio(to:includeTail:) or renderOfflineMIDI().
 /// Always pair with a subsequent call to resumeAfterOfflineRender().
 - (void)stopForOfflineRender NS_SWIFT_NAME(stopForOfflineRender());
 
@@ -125,10 +125,14 @@
 /// Offline audio export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
 /// device) and writes the processed output to an audio file at `url`. Blocking — call from a
 /// background thread. Call stopForOfflineRender() on the main thread before dispatching.
+/// When `includeTail` is YES, rendering continues past the end of the source (feeding silence)
+/// until the effects tail decays below -96 dBFS, then fades to an exact 0.0 final sample
+/// (capped at 60 s). When NO, the output length equals the source length.
 /// Returns YES on success, NO on failure (error written to `outError`).
 - (BOOL)renderOfflineAudioToURL:(NSURL *)url
+                    includeTail:(BOOL)includeTail
                           error:(NSError **)outError
-    NS_SWIFT_NAME(renderOfflineAudio(to:));
+    NS_SWIFT_NAME(renderOfflineAudio(to:includeTail:));
 
 /// Offline MIDI export. Runs the full loaded PCM array through RNBO in a tight loop (no audio
 /// device), accumulating all MIDI events emitted by the patch. Blocking — call from a background
