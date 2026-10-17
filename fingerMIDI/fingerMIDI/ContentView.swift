@@ -137,7 +137,6 @@ final class ParameterStore {
     // Whitelist: only these RNBO parameter IDs get UI controls.
     static let specs: [String: Spec] = [
         "Onset/enable":          .init(label: "Onset Enable",      controlType: .toggle,      order:  0, initialOverride: 1),
-        "Onset/needs_init":      .init(label: "Onset Needs Init",  controlType: .toggle,      order:  1),
         "EnableTraining":        .init(label: "Enable Training",   controlType: .toggle,      order:  2),
 
         // Onset detection tuning — number inputs, in the main toolbar right of the onset toggle buttons.
@@ -453,8 +452,7 @@ struct ContentView: View {
     private var fileLoaded: Bool { audioLoaded }
 
     // The five onset tuning parameters whose changes make the overlay stale.
-    // Onset/enable and Onset/needs_init are excluded: toggling them doesn't alter
-    // detection sensitivity or timing.
+    // Onset/enable is excluded: toggling it doesn't alter detection sensitivity or timing.
     private static let onsetTuningParamIds: Set<String> = [
         "Onset/thresh", "Onset/relaxtime", "Onset/floor", "Onset/mingap", "Onset/medspan"
     ]
@@ -681,9 +679,6 @@ struct ContentView: View {
 
                 if let (i, _) = indexed("Onset/enable") {
                     iconToggle(i: i, systemImage: "power")
-                }
-                if let (i, _) = indexed("Onset/needs_init") {
-                    iconToggle(i: i, systemImage: "x.circle.fill")
                 }
                 if let (i, _) = indexed("EnableTraining") {
                     textToggle(i: i, title: "Train")
@@ -1236,7 +1231,7 @@ struct ContentView: View {
 
     // MARK: Control views
 
-    // Icon-only onset toggle (e.g. Onset Enable = power, Onset Needs Init = x.circle.fill).
+    // Icon-only onset toggle (e.g. Onset Enable = power).
     // Same toggle semantics as before: value >= 0.5 is "on", tinted when on.
     @ViewBuilder
     private func iconToggle(i: Int, systemImage: String) -> some View {

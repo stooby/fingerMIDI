@@ -657,7 +657,7 @@ Provenance decides this rather than timestamp proximity because **the two passes
 | Transport stopped | Open note-ons flushed | `false` | Unchanged | Unchanged |
 | Onset tuning param changed | All notes marked stale; generation bumped | `true` | Reset to 0 | **Enabled** |
 | Spectral cutoff changed | Unchanged; generation bumped | Unchanged | Reset to 0 | **Enabled** |
-| `Onset/enable` / `Onset/needs_init` toggled | Unchanged | Unchanged | Unchanged | Unchanged |
+| `Onset/enable` toggled | Unchanged | Unchanged | Unchanged | Unchanged |
 | **Analyze** pressed | Replaced by offline result; generation bumped | `false` | Unchanged | Disabled (up-to-date) |
 | **Export MIDI** pressed | Replaced from same event batch; generation bumped | `false` | Unchanged | Disabled (up-to-date) |
 | New file imported | Cleared; generation reset | — | 0 | **Enabled** (no analysis yet) |
@@ -678,7 +678,7 @@ Stale marking therefore hangs off `lastOverlayOnsetParams`, a snapshot refreshed
 6. Resume playback → fresh real-time detections (at the new parameter values) replace stale grey notes as the playhead passes through them.
 7. Change a spectral cutoff mid-playback → rectangles keep their colors, nothing behind the playhead disappears, "Analyze" re-enables; re-classified notes replace their predecessors one at a time as playback passes over them.
 8. Press **Analyze** → entire overlay replaced by fresh offline results; all notes return to full color; button disables.
-9. Toggle `Onset/enable` or `Onset/needs_init` → overlay and button state unchanged.
+9. Toggle `Onset/enable` → overlay and button state unchanged.
 10. Press **Export MIDI** → exported file and overlay both reflect the same event set; button disables.
 11. Seek by clicking/dragging the waveform → existing rectangles stay at their file-relative positions, and no rectangle from before the seek lands at the new playhead.
 12. Import a second file → overlay clears; "Analyze" immediately enables.
@@ -1201,7 +1201,7 @@ Built once at init by combining the whitelist metadata with RNBO-queried values.
 
 | `ControlType` | SwiftUI control | Notes |
 |---|---|---|
-| `.toggle` | `Button` (bordered, tinted when on) | Flips between `0.0` and `1.0`; hand-placed in `mainToolbar` with per-toggle icons — Onset Enable = `power`, Onset Needs Init = `x.circle.fill` — while Enable Training renders as a "Train" text button |
+| `.toggle` | `Button` (bordered, tinted when on) | Flips between `0.0` and `1.0`; hand-placed in `mainToolbar` with per-toggle icons — Onset Enable = `power` — while Enable Training renders as a "Train" text button |
 | `.rotary` | `RotarySlider` (pure SwiftUI `View` using `Canvas` + `DragGesture`) | Single horizontal row in `parametersPanel`: Onset Input pinned in a leading column set off by a `Divider()`, the other five distributed with equal `Spacer()`s; label and current value displayed below the knob; arc sweeps 270° from ~7:30 (min) to ~4:30 (max); vertical drag changes value (Shift = 10× finer); double-click resets to `initialOverride ?? defaultValue` |
 | `.discrete` | Hand-placed per param | Synth Mode renders as a 2-state icon radio (`waveform.circle.fill` = 1 / `hockey.puck` = 0); Greyhole Preset renders as a `Slider(step: 1)` with a `dice`-icon Randomize button (`Param.hasRandomize`) that sends a fixed trigger value (`9`) directly via `setParameter` without updating `values[]` |
 | `.numberInput` | `NumberInputCell` — text field + label | Displayed in `mainToolbar` in the same row as the onset toggle icons and the Analyze button (no divider); commits on Return or focus loss; clamps to `param.min…param.max` |
