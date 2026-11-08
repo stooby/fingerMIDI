@@ -621,12 +621,21 @@ struct LiveWaveform {
         // (everything we send via _paramEventInterface->setParameterValue), and
         // which parameter indices it should care about. SpecFlatCutoff and
         // SpecCentCutoff are set internally by the patch after EnableTraining
-        // runs; if either is missing from the patch we just skip it.
+        // runs; the seven Greyhole Delay parameters are rewritten internally by
+        // the GreyholePreset controller (preset slider / randomize). If any is
+        // missing from the patch we just skip it.
         _paramCapture.setHostInterfaceId(
             (RNBO::ParameterInterfaceId)_paramEventInterface.get()
         );
         std::set<RNBO::ParameterIndex> watched;
-        for (NSString *paramId in @[@"SpecFlatCutoff", @"SpecCentCutoff"]) {
+        for (NSString *paramId in @[@"SpecFlatCutoff", @"SpecCentCutoff",
+                                    @"GreyholeDelayFX_Stereo/DelayTime",
+                                    @"GreyholeDelayFX_Stereo/Size",
+                                    @"GreyholeDelayFX_Stereo/Feedback",
+                                    @"GreyholeDelayFX_Stereo/Diffusion",
+                                    @"GreyholeDelayFX_Stereo/ModFreq",
+                                    @"GreyholeDelayFX_Stereo/ModDepth",
+                                    @"GreyholeDelayFX_Stereo/Damp"]) {
             RNBO::ParameterIndex idx =
                 _coreObject.getParameterIndexForID(paramId.UTF8String);
             if (idx != RNBO::INVALID_INDEX) watched.insert(idx);

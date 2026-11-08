@@ -31,6 +31,15 @@ enum ControlTooltips {
         // Parameter controls with a custom tooltip (override the spec.label fallback).
         "EnableTraining": "Enable training for at least a 5-10 seconds\nduring active playback of your source material,\nand then disable to automatically set the\nSpectral Centroid and Flatness Cutoff values.",
 
+        // Greyhole Delay parameters.
+        "GreyholeDelayFX_Stereo/DelayTime": "Greyhole Delay Time: 0.1 - 1.5 seconds",
+        "GreyholeDelayFX_Stereo/Size":      "Greyhole Size: scales the delay lines' length",
+        "GreyholeDelayFX_Stereo/Feedback":  "Greyhole Feedback: 0.0 (single echo) - 1.0 (endless)",
+        "GreyholeDelayFX_Stereo/Diffusion": "Greyhole Diffusion: smears echoes together (0.0 - 1.0)",
+        "GreyholeDelayFX_Stereo/ModFreq":   "Greyhole Mod Freq: delay modulation rate, 0 - 10 Hz",
+        "GreyholeDelayFX_Stereo/ModDepth":  "Greyhole Mod Depth: delay modulation amount (0.0 - 1.0)",
+        "GreyholeDelayFX_Stereo/Damp":      "Greyhole Damp: high-frequency damping in the feedback (0.0 - 1.0)",
+
         // Non-parameter action buttons (no rnboId to fall back on).
         "analyze":            "Analyze: Offline onset detection",
         "transport.rewind":   "Rewind to Start",

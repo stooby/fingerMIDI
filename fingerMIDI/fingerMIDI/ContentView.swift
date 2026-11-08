@@ -132,6 +132,10 @@ final class ParameterStore {
         // Overrides the RNBO patch's initialValue in the UI for when assign_defaults values
         // are not suitable
         var initialOverride: Float? = nil
+        // Narrows the control's range below the RNBO parameter's min/max, for when part of
+        // the patch's range has no audible effect. Values the patch writes itself (presets,
+        // randomize) are clamped into this range for display; the patch keeps its own value.
+        var uiRange: ClosedRange<Float>? = nil
     }
 
     // Whitelist: only these RNBO parameter IDs get UI controls.
@@ -160,6 +164,20 @@ final class ParameterStore {
         "SynthMode":             .init(label: "Synth Mode",        controlType: .discrete, order: 16),
         "GreyholeDelayFX_Controller/GreyholePreset":
                 .init(label: "Greyhole Preset",  controlType: .discrete, order: 17, hasRandomize: true, initialOverride: 1),
+
+        // Greyhole Delay parameters — second row of the parameters panel. Orders follow the
+        // preset's so pushAllValuesToEngine() writes these after it; their RNBO defaults
+        // equal preset 1's values, which is the preset the UI starts on.
+        // The patch accepts 0.1 - 60 s, but its delay line is capped at ~1.49 s, so longer
+        // values sound identical; the knob stops at 1.5 s.
+        "GreyholeDelayFX_Stereo/DelayTime": .init(label: "Delay Time", controlType: .rotary, order: 18,
+                                                  uiRange: 0.1...1.5),
+        "GreyholeDelayFX_Stereo/Size":      .init(label: "Size",       controlType: .rotary, order: 19),
+        "GreyholeDelayFX_Stereo/Feedback":  .init(label: "Feedback",   controlType: .rotary, order: 20),
+        "GreyholeDelayFX_Stereo/Diffusion": .init(label: "Diffusion",  controlType: .rotary, order: 21),
+        "GreyholeDelayFX_Stereo/ModFreq":   .init(label: "Mod Freq",   controlType: .rotary, order: 22),
+        "GreyholeDelayFX_Stereo/ModDepth":  .init(label: "Mod Depth",  controlType: .rotary, order: 23),
+        "GreyholeDelayFX_Stereo/Damp":      .init(label: "Damp",       controlType: .rotary, order: 24),
     ]
 
     struct Param: Identifiable {
@@ -186,8 +204,8 @@ final class ParameterStore {
             guard let dict = engine.parameterInfo(at: Int32(i)) else { continue }
             let rnboId = dict["id"] as? String ?? ""
             guard let spec = Self.specs[rnboId] else { continue }
-            let min    = (dict["min"] as? NSNumber)?.floatValue ?? 0
-            let max    = (dict["max"] as? NSNumber)?.floatValue ?? 1
+            let min    = spec.uiRange?.lowerBound ?? (dict["min"] as? NSNumber)?.floatValue ?? 0
+            let max    = spec.uiRange?.upperBound ?? (dict["max"] as? NSNumber)?.floatValue ?? 1
             let defVal = (dict["default"] as? NSNumber)?.floatValue ?? 0
             collected.append(Param(
                 id: Int32(i), rnboIndex: Int32(i), rnboId: rnboId,
@@ -228,7 +246,7 @@ final class ParameterStore {
     // would just bounce the same event through the source filter again.
     func updateValueFromEngine(at i: Int, value: Float) {
         guard i >= 0, i < values.count else { return }
-        values[i] = value
+        values[i] = Swift.min(Swift.max(value, params[i].min), params[i].max)
     }
 
     // Queues the current UI state for all parameters into RNBO's parameter interface.
@@ -606,10 +624,11 @@ struct ContentView: View {
             }
         }
         // Window sizing (points, not pixels — a 2× Retina display renders these at 2252×982):
-        // fixed 490 height (min == max), and a 1126 floor on width that can grow but not shrink.
+        // fixed 605 height (min == max; 490 + the Greyhole Delay row), and a 1126 floor on width
+        // that can grow but not shrink.
         // Paired with .windowResizability(.contentSize) on the WindowGroup in fingerMIDIApp.
         .frame(minWidth: 1126, idealWidth: 1126, maxWidth: 2252,
-               minHeight: 490, maxHeight: 490)
+               minHeight: 605, maxHeight: 605)
         .onReceive(Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()) { _ in
             guard isPlaying else { return }
             realTimeCoverageMs += 1000.0 / 15.0
@@ -1197,35 +1216,74 @@ struct ContentView: View {
         "InputDelaySend_dB", "DrumSynthDelaySend_dB", "DelayOutput_dB"
     ]
 
+    // Greyhole Delay rotaries (second row of the parameters panel), in signal-flow order.
+    private static let greyholeRotaryOrder = [
+        "GreyholeDelayFX_Stereo/DelayTime", "GreyholeDelayFX_Stereo/Size",
+        "GreyholeDelayFX_Stereo/Feedback",  "GreyholeDelayFX_Stereo/Diffusion",
+        "GreyholeDelayFX_Stereo/ModFreq",   "GreyholeDelayFX_Stereo/ModDepth",
+        "GreyholeDelayFX_Stereo/Damp"
+    ]
+
     private var parametersPanel: some View {
         ScrollView {
-            HStack(alignment: .top, spacing: 0) {
-                // Onset Input — an onset-detector parameter, set apart from the IO
-                // params by a divider and pinned under the spectral left columns.
-                if let (i, param) = indexed("OnsetInput") {
-                    rotaryCell(i: i, param: param)
-                        .frame(width: Self.onsetInputColumnWidth)
-                }
-                Divider()
-
-                // IO parameters + Greyhole + Synth Mode, evenly distributed with
-                // equal spacers so they spread across the full remaining width.
-                ForEach(Self.IOrotaryOrder, id: \.self) { rnboId in
-                    Spacer()
-                    if let (i, param) = indexed(rnboId) {
+            VStack(spacing: 12) {
+                HStack(alignment: .top, spacing: 0) {
+                    // Onset Input — an onset-detector parameter, set apart from the IO
+                    // params by a divider and pinned under the spectral left columns.
+                    if let (i, param) = indexed("OnsetInput") {
                         rotaryCell(i: i, param: param)
+                            .frame(width: Self.onsetInputColumnWidth)
+                    }
+                    Divider()
+
+                    // IO parameters + Greyhole + Synth Mode, evenly distributed with
+                    // equal spacers so they spread across the full remaining width.
+                    ForEach(Self.IOrotaryOrder, id: \.self) { rnboId in
+                        Spacer()
+                        if let (i, param) = indexed(rnboId) {
+                            rotaryCell(i: i, param: param)
+                        }
+                    }
+                    Spacer()
+                    if let (i, param) = indexed("GreyholeDelayFX_Controller/GreyholePreset") {
+                        greyholeControl(i: i, param: param)
+                    }
+                    Spacer()
+                    if let (i, _) = indexed("SynthMode") {
+                        synthModeControl(i: i)
                     }
                 }
-                Spacer()
-                if let (i, param) = indexed("GreyholeDelayFX_Controller/GreyholePreset") {
-                    greyholeControl(i: i, param: param)
-                }
-                Spacer()
-                if let (i, _) = indexed("SynthMode") {
-                    synthModeControl(i: i)
+
+                if Self.greyholeRotaryOrder.allSatisfy({ indexed($0) != nil }) {
+                    Divider()
+                    greyholeParametersRow
                 }
             }
             .padding()
+        }
+    }
+
+    // Greyhole Delay rotaries. Same leading-column + divider structure as the row above so
+    // the divider lines up, with a caption in the leading column.
+    private var greyholeParametersRow: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 8) {
+                Text("Greyhole\nDelay")
+                    .font(.parameterLabel)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                GreyholeDelayIcon()
+                    .frame(width: 64, height: 28)
+            }
+            .frame(width: Self.onsetInputColumnWidth)
+            Divider()
+            ForEach(Self.greyholeRotaryOrder, id: \.self) { rnboId in
+                Spacer()
+                if let (i, param) = indexed(rnboId) {
+                    rotaryCell(i: i, param: param)
+                }
+            }
+            Spacer()
         }
     }
 

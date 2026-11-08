@@ -2,7 +2,7 @@
 
 **fingerMIDI** is a simple 2-voice audio-to-MIDI finger percussion transcription app for macOS - in active development.
 
-![fingerMIDI screenshot](assets/fingerMIDI_screenshot_20260907.png)
+![fingerMIDI screenshot](assets/fingerMIDI_screenshot_20261108.png)
 
 The flexibility of MIDI transcription lets you collect rhythmic ideas from your audio recordings, wherever inspiration strikes! 👉📲 🦅🌄 
 
@@ -10,7 +10,7 @@ Specialized for finger percussion, it performs onset detection with spectral cen
 
 A MIDI file of your performance can be exported to your DAW of choice where you can finish your music! 🪄💻🔊
 
-For 👽💫, it also includes an Eventide-style [`reverb`](https://faustlibraries.grame.fr/libs/reverbs/#regreyhole) exported from the [`FAUST`](https://faust.grame.fr/) Library (along with basic drum sampler and [`drum synth`](https://faustlibraries.grame.fr/libs/physmodels/#pmdjembe))
+For 👽💫, it also includes an 'Eventide-inspired' [`reverb / feedback delay`](https://faustlibraries.grame.fr/libs/reverbs/#regreyhole) exported from the [`FAUST`](https://faust.grame.fr/) Library (along with a basic drum sampler and [`drum synth`](https://faustlibraries.grame.fr/libs/physmodels/#pmdjembe))
 
 The Max RNBO DSP code is made with [`SuperRNBO`](https://github.com/stooby/SuperRNBO) (a library of Max RNBO translations of SuperCollider UGen C++ source).
 
@@ -58,7 +58,7 @@ The Max RNBO DSP code is made with [`SuperRNBO`](https://github.com/stooby/Super
 - Simple 2-voice drum synth triggered by detected onsets:
   - Voice 1: Drum Sampler (TR-909)
   - Voice 2: Djembe Physical Model ([`djembe`](https://faustlibraries.grame.fr/libs/physmodels/#pmdjembe) from FAUST)
-- Feedback delay ([`greyhole`](https://faustlibraries.grame.fr/libs/reverbs/#regreyhole) from FAUST) with selectable presets and a parameter randomizer
+- ([`greyhole`](https://faustlibraries.grame.fr/libs/reverbs/#regreyhole) from FAUST), an 'Eventide-inspired' reverb and feedback delay effect with selectable presets and a parameter randomizer
 - Mixing controls of audio input, drum synth output, and delay signals  
 
 
